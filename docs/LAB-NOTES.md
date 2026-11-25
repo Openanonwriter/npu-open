@@ -56,3 +56,46 @@ Timestamped as work proceeds. Folded into TECHNICAL.md and JOURNAL.md at the end
   - c = 0.6: 88.7% correct, 7.9% false alarms, suppobox 35%
   - c = 0.7: 88.3% correct, 7.5% false alarms, suppobox 17%
   So neighbours rescue the word-built family (17% -> 69%) at a cost of about 2 points of false alarms. No threshold was tuned on the test names; all three are reported.
+- 01:08 Soak test: every original case plus 301, 204 and 229 in a loop for 306 s: 28 passes, 672 of 672 "verified" lines, 0 failures, highest temperature 49 C throughout (it was 49 C at the start), no DSP reset, no kernel errors from fastrpc.
+- 01:09 328 NSL-KDD with three opinions (closed-form classifier, whitened distance, label of the nearest training connection): alarm on any one: 85.0% correct, 8.9% false alarms; any two: 79.8%, 7.4%; all three: 73.3%, 1.7%. "Any one" is the best accuracy of the hour on KDDTest+; "all three" is a low-false-alarm setting.
+- 01:10 Final quiet live test with the full baseline (1,805 flow records): 17 records, 0 alarms (threshold 14.2). Unit tests pass. Server stopped so the DSP is not held at a raised clock.
+
+## Findings at the end of the hour (stopped at 41 minutes)
+
+What works well on real data:
+
+| Use | Result |
+|---|---|
+| Search with no model | MNIST nearest neighbour 96.2% (10,000 against 30,000 images, 1.97 s); man-page search over 20,646 entries in 0.05 s |
+| Intrusion benchmark (NSL-KDD) | 85.0% with any of three opinions; 73.3% with 1.7% false alarms when all three agree; 78.8% by nearest neighbour alone |
+| Live flow scoring on this machine | 1.1% false alarms on unseen real traffic, every scan flagged, quiet captures 0 alarms |
+| Closed-form MNIST | 94.14% (1,024 features), 95.56% (2,048) |
+| Radio, real recordings | OOK or FSK 87% by a rule with no fitting; repeat packets found for 16 of 24 devices |
+| Phishing hosts | 69.9% of unseen hosts at 1% false alarms |
+| Latency forecast | 27% lower error than repeating the last value |
+
+What does not work, or only partly:
+
+| Use | Why |
+|---|---|
+| Lookalike matching on a phishing feed | Today's phishing sits on free hosting; hostnames rarely imitate brands |
+| Word-built generated domains | Statistics see ordinary words; neighbours help (suppobox 17% -> 69%) at about 2 points of false alarms |
+| R2L attacks in NSL-KDD | 11-40% whatever the method; they look like normal sessions |
+| First-packet signatures | Too few new connections per server in real modern traffic |
+| Wi-Fi rate prediction | Barely better than repeating the last value |
+| Transmitter fingerprinting, beamforming, denoising on real signals | No suitable real data (no array recordings, no clean references, RadioML link dead) |
+
+Engine facts learned:
+
+- The accelerator does 2.3 trillion FP16 multiply-adds per second on its own clock (verified output).
+- A FastRPC call costs about 0.35 ms whatever it carries. Fewer, larger calls is the main lever: loading a
+  layer in one call cut model loading from 25-35 ms to 5.6 ms.
+- Layers with few input tiles per output group are limited by convert and store, not by multiply (346 billion/s).
+- 4 MB of VTCM is granted; 16 MB is refused. A 784 -> 4,096 layer does not fit.
+- End to end the server reaches 200-240 billion multiply-adds per second; the copies between client, server and
+  shared buffers are the remaining cost.
+- 306 s of continuous load: 672 of 672 checks correct, 49 C, no DSP reset. No DSP reset in the whole hour.
+
+Server and tool changes made during the hour: NEON result unpacking; 8 MB shared output buffer; NEON weight
+packing; DSP method 4 (load a layer in one call); request 'A' (best match per row); unit tests; ids/live2.sh and
+ids/watch.sh; scripts/prep_real.py.

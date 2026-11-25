@@ -580,6 +580,29 @@ fn nsl_fusion(c: &mut Client) -> Result<(), String> {
     let thr = quantile(&norm(&yn), 0.97);
     let dist = norm(&yt);
     let alarm: Vec<bool> = (0..n).map(|i| yc[i] > 0.0 || dist[i] > thr).collect();
+    // third opinion: label of the nearest of all training connections (as in case 229)
+    let (nt, block) = (k.ytrain.len(), 8000usize);
+    let mut best = vec![(0usize, f32::MIN); n];
+    for b0 in (0..nt).step_by(block) {
+        let m = block.min(nt - b0);
+        let wb = k.train[b0 * d..(b0 + m) * d].to_vec();
+        let bias: Vec<f32> = (0..m).map(|j| -0.5 * wb[j * d..(j + 1) * d].iter().map(|v| v * v).sum::<f32>()).collect();
+        c.define(&[Layer { n_in: d, n_out: m, relu: false, w: wb, b: bias }])?;
+        let (out, s3) = c.run_argmax(&k.test, n)?;
+        add(&mut st, s3);
+        for (q, (i, v)) in out.into_iter().enumerate() {
+            if v > best[q].1 {
+                best[q] = (b0 + i, v);
+            }
+        }
+    }
+    let votes: Vec<u8> = (0..n).map(|i| (yc[i] > 0.0) as u8 + (dist[i] > thr) as u8 + (k.ytrain[best[i].0] != 0) as u8).collect();
+    let score = |need: u8| -> String {
+        let right = (0..n).filter(|&i| (votes[i] >= need) == (k.ytest[i] != 0)).count();
+        let fa = (0..n).filter(|&i| k.ytest[i] == 0 && votes[i] >= need).count() as f32 / k.ytest.iter().filter(|&&l| l == 0).count() as f32;
+        format!("{:.1}% correct, {:.1}% false alarms", 100.0 * right as f32 / n as f32, 100.0 * fa)
+    };
+    println!("328 | NSL-KDD, three opinions      | classifier, distance, nearest neighbour | any one: {}; any two: {}; all three: {}", score(1), score(2), score(3));
     let right = (0..n).filter(|&i| alarm[i] == (k.ytest[i] != 0)).count();
     let rate = |f: &dyn Fn(u8) -> bool| { let idx: Vec<usize> = (0..n).filter(|&i| f(k.ytest[i])).collect(); 100.0 * idx.iter().filter(|&&i| alarm[i]).count() as f32 / idx.len().max(1) as f32 };
     report(228, "NSL-KDD, classifier or distance", &format!("{n} real test connections"),

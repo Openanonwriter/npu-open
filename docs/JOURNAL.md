@@ -169,6 +169,8 @@ form: TECHNICAL.md section 21.
 | 30 min | NSL-KDD nearest neighbour over all 125,973 training rows, no fitted model | 78.8%; showed that narrow-input layers are limited by convert, not multiply |
 | 32 min | Generated domains by nearest neighbour | 69.1% overall but suppobox 78% (readout: 17%) |
 | 33 min | Combined readout and close neighbour | First try used a weak readout and looked bad; redone with the strong one: 89.3%, suppobox 69%, false alarms 9.7% |
+| 34 min | Soak test, 5 minutes of continuous runs | 28 passes, 672 of 672 checks verified, 49 °C steady, no resets |
+| 39 min | Three-way vote on NSL-KDD | Any one 85.0%; all three 73.3% with 1.7% false alarms |
 
 Things that did not work, kept on record:
 
