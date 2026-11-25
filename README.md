@@ -21,8 +21,8 @@ Developed on a Microsoft Surface Pro 11 (Snapdragon X Plus, `x1p64100`) running 
 | First application | Network flow anomaly scoring (`ids/`), a demonstrator |
 | NPU server | Rust, standard library only; any program can use the accelerator over a local socket (`rust/`, `serve.sh`) |
 | Demonstrations | 24 of 25 run on the accelerator: math, cyber defence, networking, radio (`rust/src/bin/usecases/`) |
-| Real data | 23 real-data results: NSL-KDD 84.4%, MNIST 94.1% with a closed-form model, OOK/FSK on 164 off-air recordings 87%, live flow scoring with 1.1% false alarms (TECHNICAL.md section 21) |
-| Accelerator throughput | 2.3 trillion FP16 multiply-adds per second on the DSP clock, verified; 213 billion per second end to end |
+| Real data | 24 real-data results: NSL-KDD 84.4%, MNIST 96.2% by nearest neighbour and 94.1% with a closed-form model, OOK/FSK on 164 off-air recordings 87%, live flow scoring with 1.1% false alarms (TECHNICAL.md section 21) |
+| Accelerator throughput | 2.3 trillion FP16 multiply-adds per second on the DSP clock, verified; about 200-240 billion per second end to end |
 | Convolution | Not started |
 
 This is research code from a single machine. Expect rough edges.

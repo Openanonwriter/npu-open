@@ -4,6 +4,7 @@
 //! |---|---|---|
 //! | `M` define | u32 layers; per layer u32 n_in, n_out, relu; then per layer f32 w[n_out*n_in], f32 b[n_out] | u32 VTCM kilobytes |
 //! | `R` run | u32 rows; f32 x[rows*n_in] | u64 dsp_us, u64 wall_us, u64 pack_us, u32 calls, u32 n_out, f32 y[rows*n_out] |
+//! | `A` argmax | as `R` | u64 dsp_us, u64 wall_us, u64 pack_us, u32 calls, then per row u32 index, f32 value |
 //! | `Q` quit | none | none |
 //!
 //! Every reply starts with u32 status: 0 ok, 1 error followed by u32 length and a UTF-8 message.
@@ -94,6 +95,23 @@ impl Client {
         let st = Stats { dsp_us: read_u64(&mut self.s).map_err(io)?, wall_us: read_u64(&mut self.s).map_err(io)?, pack_us: read_u64(&mut self.s).map_err(io)?, unpack_us: 0, calls: read_u32(&mut self.s).map_err(io)? };
         let n_out = read_u32(&mut self.s).map_err(io)? as usize;
         Ok((read_f32s(&mut self.s, rows * n_out).map_err(io)?, st))
+    }
+
+    /// Largest output of each row and its index (the server does the search; only two numbers per row come back).
+    pub fn run_argmax(&mut self, x: &[f32], rows: usize) -> Result<(Vec<(usize, f32)>, Stats), String> {
+        let io = |e: io::Error| e.to_string();
+        self.s.write_all(b"A").map_err(io)?;
+        self.s.write_all(&(rows as u32).to_le_bytes()).map_err(io)?;
+        write_f32s(&mut self.s, x).map_err(io)?;
+        self.status()?;
+        let st = Stats { dsp_us: read_u64(&mut self.s).map_err(io)?, wall_us: read_u64(&mut self.s).map_err(io)?, pack_us: read_u64(&mut self.s).map_err(io)?, unpack_us: 0, calls: read_u32(&mut self.s).map_err(io)? };
+        let mut out = Vec::with_capacity(rows);
+        for _ in 0..rows {
+            let i = read_u32(&mut self.s).map_err(io)? as usize;
+            let v = f32::from_bits(read_u32(&mut self.s).map_err(io)?);
+            out.push((i, v));
+        }
+        Ok((out, st))
     }
 
     pub fn quit(mut self) {

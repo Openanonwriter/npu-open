@@ -29,6 +29,7 @@ fn cases() -> Vec<Case> {
     v.extend(real::CASES8);
     v.extend(real::CASES9);
     v.extend(real::CASES10);
+    v.extend(real::CASES11);
     v
 }
 

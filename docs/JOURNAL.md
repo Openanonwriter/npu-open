@@ -165,6 +165,8 @@ form: TECHNICAL.md section 21.
 | 25 min | Capture finished; full real suite rerun | 23 results in TECHNICAL.md section 21 |
 | 27 min | Vectorised weight packing to speed up paged searches | No change: timing showed 63 load calls at 0.35 ms each were the cost, not packing |
 | 28 min | DSP method 4: load a whole layer in one call through the shared buffer | Model load 25-35 ms to 5.6 ms; image search 1.3 s to 0.65 s; everything still verifies |
+| 29 min | Server request `A`: best match per row only | Nearest neighbour for all 10,000 MNIST digits: 96.2% in 1.97 s |
+| 30 min | NSL-KDD nearest neighbour over all 125,973 training rows, no fitted model | 78.8%; showed that narrow-input layers are limited by convert, not multiply |
 
 Things that did not work, kept on record:
 

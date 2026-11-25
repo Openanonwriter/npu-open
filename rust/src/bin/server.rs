@@ -56,6 +56,26 @@ fn serve(sess: &mut Session, s: &mut UnixStream, widths: &mut (usize, usize)) ->
                     Err(e) => fail(s, &e)?,
                 }
             }
+            b'A' => {
+                let rows = read_u32(s)? as usize;
+                let x = read_f32s(s, rows * widths.0)?;
+                match sess.run_argmax(&x, rows) {
+                    Ok((best, st)) => {
+                        let mut buf = Vec::with_capacity(32 + rows * 8);
+                        buf.extend_from_slice(&0u32.to_le_bytes());
+                        for v in [st.dsp_us, st.wall_us, st.pack_us] {
+                            buf.extend_from_slice(&v.to_le_bytes());
+                        }
+                        buf.extend_from_slice(&st.calls.to_le_bytes());
+                        for (i, v) in best {
+                            buf.extend_from_slice(&i.to_le_bytes());
+                            buf.extend_from_slice(&v.to_bits().to_le_bytes());
+                        }
+                        s.write_all(&buf)?;
+                    }
+                    Err(e) => fail(s, &e)?,
+                }
+            }
             b'Q' => return Ok(true),
             other => {
                 fail(s, &format!("unknown request {other:#x}"))?;

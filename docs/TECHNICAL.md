@@ -568,7 +568,11 @@ All confirmed by the server working, unless marked.
 |---|---|---|
 | `M` define | u32 layers; per layer u32 n_in, n_out, relu; then per layer f32 weights `[n_out][n_in]`, f32 bias | u32 VTCM kilobytes |
 | `R` run | u32 rows; f32 `x[rows][n_in]` | u64 dsp_us, u64 wall_us, u64 pack_us, u32 calls, u32 n_out, f32 `y[rows][n_out]` |
+| `A` argmax | as `R` | u64 dsp_us, u64 wall_us, u64 pack_us, u32 calls, then per row u32 index of the largest output and f32 value |
 | `Q` quit | none | none |
+
+`A` exists because search-style uses need only the best match per row: the server takes the maximum while
+unpacking and returns two numbers per row, where `R` returns `rows x n_out` floats.
 
 Every reply starts with u32 status: 0, or 1 followed by u32 length and a UTF-8 message.
 
@@ -698,7 +702,7 @@ No gradient descent anywhere. Three kinds of model:
 
 | Kind | How the weights are obtained | Cases |
 |---|---|---|
-| Analytic or averaged | Fourier matrix, templates, class means, whitening from a covariance (Jacobi) | 103, 104, 108, 114, 120 rule, 121, 204, 208, 209, 215, 223, 323 |
+| Analytic or averaged | Fourier matrix, templates, class means, whitening from a covariance (Jacobi), or the data itself as weights (nearest neighbour) | 103, 104, 108, 114, 120 rule, 121, 204, 208, 209, 215, 223, 229, 323 |
 | Linear readout | Ridge regression solved by Cholesky; sparse accumulation where inputs are sparse | 112, 217, 218, 227, 312 |
 | Two layers | A random ReLU layer whose outputs are computed **on the accelerator**, then a ridge readout (`random_feature_net`) | 120 readout, 126, 203, 212, 226, 228 |
 
@@ -711,30 +715,31 @@ Final run, 2026-11-25, with the full 25-minute capture (62 thousand packets, 1,8
 samples and 2,798 Wi-Fi samples:
 
 ```
-103 | MNIST nearest centroid       | 5000 real digit images, 10 class means | 80.4% correct with no trained model                  |    0.20 us/row NPU,    0.73 us/row total | not checked
-104 | Man-page search              | 6 queries against 20646 real entries | top hits: dir, gunzip, chmod, df, curl, xzegrep      |   27.17 us/row NPU,  223.83 us/row total | not checked
+103 | MNIST nearest centroid       | 5000 real digit images, 10 class means | 80.4% correct with no trained model                  |    0.20 us/row NPU,    0.71 us/row total | not checked
+104 | Man-page search              | 6 queries against 20646 real entries | top hits: dir, gunzip, chmod, df, curl, xzegrep      |   27.50 us/row NPU,  231.50 us/row total | not checked
 108 | Intrusion scoring, NSL-KDD   | 22544 real test connections, PCA   | attacks flagged 65.1% (DoS 80, probe 60, R2L 32, U2R 63), false alarms 9.8% |    0.05 us/row NPU,    0.25 us/row total | not checked
-110 | Lookalikes, live phishing feed | 300 phishing hosts, 20000 popular sites | 7.3% of phishing hosts flagged ("github" ~ github); 3.44% of popular sites |    0.07 us/row NPU,    0.30 us/row total | not checked
-112 | Generated domains, real set  | 40000 real names, 732 features     | 86.9% correct; hardest families: nymaim 6%, suppobox 11%, gozi 55% |    0.16 us/row NPU,    0.67 us/row total | not checked
+110 | Lookalikes, live phishing feed | 300 phishing hosts, 20000 popular sites | 7.3% of phishing hosts flagged ("github" ~ github); 3.44% of popular sites |    0.07 us/row NPU,    0.32 us/row total | not checked
+112 | Generated domains, real set  | 40000 real names, 732 features     | 86.9% correct; hardest families: nymaim 6%, suppobox 11%, gozi 55% |    0.16 us/row NPU,    0.68 us/row total | not checked
 114 | Behaviour baseline, NSL-KDD  | 22544 real test connections, whitened | attacks flagged 78.0% (DoS 89, probe 89, R2L 40, U2R 75), false alarms 4.4% |    0.05 us/row NPU,    0.26 us/row total | not checked
 126 | Intrusion classifier, NSL-KDD | 22544 real test connections, 2 layers | 78.8% correct on KDDTest+ (68.5% of attacks caught, 7.5% false alarms) |    0.09 us/row NPU,    0.29 us/row total | not checked
-203 | MNIST, random features       | 10000 real test digits, 784-1024-10 | 94.14% correct, fitted in closed form (no gradient descent) |    0.38 us/row NPU,    0.93 us/row total | not checked
-212 | Generated domains, 2 layers  | 40000 real names, 732-1024-1       | 85.4% correct; hardest families: nymaim 12%, suppobox 16%, gozi 55% |    0.33 us/row NPU,    0.85 us/row total | not checked
+203 | MNIST, random features       | 10000 real test digits, 784-1024-10 | 94.14% correct, fitted in closed form (no gradient descent) |    0.37 us/row NPU,    0.97 us/row total | not checked
+212 | Generated domains, 2 layers  | 40000 real names, 732-1024-1       | 85.4% correct; hardest families: nymaim 12%, suppobox 16%, gozi 55% |    0.33 us/row NPU,    0.91 us/row total | not checked
 226 | NSL-KDD, 1024 random features | 22544 real test connections        | 77.4% correct on KDDTest+ (65.8% of attacks caught, 7.2% false alarms) |    0.14 us/row NPU,    0.33 us/row total | not checked
-227 | Phishing host scoring        | 143 unseen phishing hosts, 10000 popular sites | 69.9% of phishing hosts caught at 1% false alarms    |    0.11 us/row NPU,    0.47 us/row total | not checked
-120 | OOK or FSK, real recordings  | 164 off-air recordings, 146253 spectra | rule: 143 of 164 right; fitted readout on unseen half: FSK 17/23, OOK 54/59 |    0.13 us/row NPU,    0.65 us/row total | not checked
-121 | Occupancy, real recordings   | 164 off-air recordings, 146253 spectra | signal found in 142; median 16 bursts, 6 kHz occupied |    0.14 us/row NPU,    0.74 us/row total | not checked
-204 | Nearest neighbour, MNIST     | 2000 digits against 30000 real images | 94.2% correct; 47 billion multiply-adds in total     |    9.64 us/row NPU,   20.94 us/row total | not checked
+227 | Phishing host scoring        | 143 unseen phishing hosts, 10000 popular sites | 69.9% of phishing hosts caught at 1% false alarms    |    0.11 us/row NPU,    0.52 us/row total | not checked
+120 | OOK or FSK, real recordings  | 164 off-air recordings, 146253 spectra | rule: 143 of 164 right; fitted readout on unseen half: FSK 17/23, OOK 54/59 |    0.12 us/row NPU,    0.59 us/row total | not checked
+121 | Occupancy, real recordings   | 164 off-air recordings, 146253 spectra | signal found in 142; median 16 bursts, 6 kHz occupied |    0.14 us/row NPU,    0.73 us/row total | not checked
+204 | Nearest neighbour, MNIST     | 10000 digits against 30000 real images | 96.2% correct; 235 billion multiply-adds in total    |   11.40 us/row NPU,   27.42 us/row total | not checked
 228 | NSL-KDD, classifier or distance | 22544 real test connections        | 84.4% correct; attacks 79.1% (DoS 95, probe 90, R2L 28, U2R 79), false alarms 8.6% |    0.07 us/row NPU,    0.27 us/row total | not checked
-312 | Generated domains, richer inputs | 60000 real names, 1764 features    | 88.7% correct, 7.3% false alarms; hardest: nymaim 6%, suppobox 17%, gozi 65% |    0.42 us/row NPU,    1.37 us/row total | not checked
-217 | Wi-Fi bitrate, real link     | 1120 real samples of this link     | RMS error 151 Mbit/s; repeat-last 168; the rate changed in 130 samples |    0.02 us/row NPU,    0.56 us/row total | not checked
-218 | Latency forecast, real pings | 2800 real round-trip times, 16 taps | RMS error 0.452 (log ms); repeat-last 0.616, long-run mean 0.621 |    0.02 us/row NPU,    0.35 us/row total | not checked
-301 | Throughput check             | 2048x800 times 800x2048            | 2351 billion multiply-adds/s on the DSP clock, 199.7 billion/s end to end |    0.70 us/row NPU,    1.50 us/row total | verified
+312 | Generated domains, richer inputs | 60000 real names, 1764 features    | 88.7% correct, 7.3% false alarms; hardest: nymaim 6%, suppobox 17%, gozi 65% |    0.41 us/row NPU,    1.24 us/row total | not checked
+217 | Wi-Fi bitrate, real link     | 1120 real samples of this link     | RMS error 151 Mbit/s; repeat-last 168; the rate changed in 130 samples |    0.02 us/row NPU,    0.45 us/row total | not checked
+218 | Latency forecast, real pings | 2800 real round-trip times, 16 taps | RMS error 0.452 (log ms); repeat-last 0.616, long-run mean 0.621 |    0.02 us/row NPU,    0.33 us/row total | not checked
+301 | Throughput check             | 2048x800 times 800x2048            | 2269 billion multiply-adds/s on the DSP clock, 220.4 billion/s end to end |    0.72 us/row NPU,    1.56 us/row total | verified
 208 | Intrusion scoring, own traffic | 1805 real flow records + 6835 scan records | 1.1% false alarms on unseen real traffic, 100.0% of scan flows flagged |    0.02 us/row NPU,    0.24 us/row total | not checked
 215 | Clusters, own traffic        | 1805 real flow records, 6 centres  | sizes: 634 (34% udp, 19% dns, 64% https); 326 (15% udp, 0% dns, 100% https); 338 (100% udp, 0% dns, 0% https); 106 (15% udp, 0% dns, 100% https); 124 (0% ud
-223 | Matched filter, carrier      | 24560 windows of 24 joined real excerpts | 21 of 24: best other match is in the same device's excerpt (median score 1.00; mostly matches carrier frequency) |    0.12 us/row NPU,    0.56 us/row 
-323 | Matched filter, packet pattern | 24320 envelope windows, 24 real devices | 16 of 24: best other match is in the same device's excerpt (median score 0.87, chance is 1 in 24) |    0.06 us/row NPU,    0.31 us/row total | not ch
+223 | Matched filter, carrier      | 24560 windows of 24 joined real excerpts | 21 of 24: best other match is in the same device's excerpt (median score 1.00; mostly matches carrier frequency) |    0.12 us/row NPU,    0.54 us/row 
+323 | Matched filter, packet pattern | 24320 envelope windows, 24 real devices | 16 of 24: best other match is in the same device's excerpt (median score 0.87, chance is 1 in 24) |    0.06 us/row NPU,    0.29 us/row total | not ch
 216 | First packets, own connections | not run                            | too few new TCP connections per server in the capture (needs 6 or more to one endpoint)
+229 | NSL-KDD nearest neighbour    | 22544 test against 125973 training connections | 78.8% correct; attacks 68.4% (DoS 86, probe 82, R2L 11, U2R 36), false alarms 7.5% |   34.76 us/row NPU,   72.04 us/row total | not checked
 ```
 
 Case 203 with 2,048 random features (`NPU_FEATS=2048`) gives 95.56%; 4,096 do not fit in VTCM.
@@ -747,6 +752,8 @@ Case 203 with 2,048 random features (`NPU_FEATS=2048`) gives 95.56%; 4,096 do no
 | End to end | The same job runs at 213 billion per second through the socket (90 billion before the NEON unpacking and the larger output buffer). The copies between client, server and shared buffers are now 10 times the accelerator's time |
 | Tables larger than VTCM | Paging works: 30,000 x 784 image table in 15 blocks, 20,646 x 256 text table in 5 blocks. Loading weights per block dominated (1.3 s for the image search, of which 23 ms is DSP run time) until loading became one call per layer: now 0.65 s, and the text search 0.05 s |
 | A FastRPC call costs about 0.35 ms | Whatever it carries. 63 per-group load calls cost 20-29 ms; packing the weights was only 4.7 ms, so vectorising the packing alone changed nothing |
+| Search without any model | Exact nearest neighbour through request `A`: MNIST, 10,000 test digits against 30,000 images, 96.2% in 1.97 s wall. NSL-KDD, 22,544 test against all 125,973 training connections, 78.8% in 7.8 s wall (0.79 s DSP) |
+| Narrow inputs are convert-limited | The NSL-KDD search runs at 346 billion multiply-adds per second on the DSP clock, not 2.3 trillion: with 3 input tiles per output group the fixed work per group (clear, bias load, two converts, two stores) dominates |
 | Whitening beats PCA for anomalies | NSL-KDD: 78.0% of attacks at 4.4% false alarms against 65.1% at 9.8% |
 | Fusion helps on NSL-KDD | Classifier OR whitened distance: 84.4% correct, up from 78.8%. More random features alone do not help (77.4% with 1,024 on 60,000 rows): KDDTest+ has attack types missing from training. R2L stays at 28-40% |
 | A real baseline fixes the false alarms | With this machine's own traffic as baseline (1,805 flow records), 1.1% false alarms on unseen real traffic and every scan flagged; a quiet 20 s live capture gave 0 alarms in 19 records, where the section 18 tool gave 6 in 25 |

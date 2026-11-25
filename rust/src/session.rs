@@ -169,6 +169,29 @@ impl Session {
 
     /// Runs `n` rows of `n_in` float32 values through the loaded network; returns `n` rows of `n_out`.
     pub fn run(&mut self, x: &[f32], n: usize) -> Result<(Vec<f32>, Stats), String> {
+        let n_out = self.model.as_ref().ok_or("no model loaded")?.n_out;
+        let mut y = vec![0f32; n * n_out];
+        let st = self.run_with(x, n, |row, at, piece| y[row * n_out + at..row * n_out + at + piece.len()].copy_from_slice(piece))?;
+        Ok((y, st))
+    }
+
+    /// Like `run`, but returns only the largest output of each row and its index. Search-style uses
+    /// (nearest neighbour, best template, nearest centre) need nothing else, and it avoids sending
+    /// `rows x n_out` floats back to the client.
+    pub fn run_argmax(&mut self, x: &[f32], n: usize) -> Result<(Vec<(u32, f32)>, Stats), String> {
+        let mut best = vec![(0u32, f32::MIN); n];
+        let st = self.run_with(x, n, |row, at, piece| {
+            for (k, &v) in piece.iter().enumerate() {
+                if v > best[row].1 {
+                    best[row] = ((at + k) as u32, v);
+                }
+            }
+        })?;
+        Ok((best, st))
+    }
+
+    /// Runs the network and hands every unpacked piece of output to `sink(row, first_channel, values)`.
+    fn run_with(&mut self, x: &[f32], n: usize, mut sink: impl FnMut(usize, usize, &[f32])) -> Result<Stats, String> {
         let m = self.model.as_ref().ok_or("no model loaded")?;
         if x.len() != n * m.n_in {
             return Err(format!("expected {} values for {} rows of width {}", n * m.n_in, n, m.n_in));
@@ -176,7 +199,6 @@ impl Session {
         let per = if m.last_signed { 2 * m.og } else { m.og };
         let (in_b, out_b) = (m.nk0 * TILE_BYTES, per * TILE_BYTES);
         let n_batches = (n + 31) / 32;
-        let mut y = vec![0f32; n * m.n_out];
         let mut stats = Stats::default();
         let mut b0 = 0;
         while b0 < n_batches {
@@ -213,10 +235,9 @@ impl Session {
                         let (mut ya, mut yb) = ([0f32; 32], [0f32; 32]);
                         unsafe { unpack_row(pos, neg, &mut ya, &mut yb) };
                         let width = (m.n_out - 32 * g).min(32);
-                        let at = (first + 2 * j) * m.n_out + 32 * g;
-                        y[at..at + width].copy_from_slice(&ya[..width]);
+                        sink(first + 2 * j, 32 * g, &ya[..width]);
                         if 2 * j + 1 < rows {
-                            y[at + m.n_out..at + m.n_out + width].copy_from_slice(&yb[..width]);
+                            sink(first + 2 * j + 1, 32 * g, &yb[..width]);
                         }
                     }
                 }
@@ -224,6 +245,6 @@ impl Session {
             stats.unpack_us += t.elapsed().as_micros() as u64;
             b0 += nb;
         }
-        Ok((y, stats))
+        Ok(stats)
     }
 }

@@ -538,7 +538,7 @@ pub const CASES4: [Case; 3] = [(204, "real", mnist_neighbours), (228, "real", ns
 fn mnist_neighbours(c: &mut Client) -> Result<(), String> {
     let (xt, yt, nt, d) = load_labelled("data/mnist/train.f32")?;
     let (x, y, _, _) = load_labelled("data/mnist/test.f32")?;
-    let (n, block) = (2000usize, 2000usize);
+    let (n, block) = (y.len(), 2000usize);
     let mut best = vec![(0usize, f32::MIN); n];
     let mut st = Stats::default();
     for b0 in (0..nt).step_by(block) {
@@ -546,9 +546,9 @@ fn mnist_neighbours(c: &mut Client) -> Result<(), String> {
         let w = xt[b0 * d..(b0 + m) * d].to_vec();
         let bias: Vec<f32> = (0..m).map(|j| -0.5 * w[j * d..(j + 1) * d].iter().map(|v| v * v).sum::<f32>()).collect();
         c.define(&[Layer { n_in: d, n_out: m, relu: false, w, b: bias }])?;
-        let (out, s) = c.run(&x[..n * d], n)?;
+        let (out, s) = c.run_argmax(&x[..n * d], n)?;
         add(&mut st, s);
-        for (q, (i, v)) in argmax_rows(&out, m).into_iter().enumerate() {
+        for (q, (i, v)) in out.into_iter().enumerate() {
             if v > best[q].1 {
                 best[q] = (b0 + i, v);
             }
@@ -941,5 +941,35 @@ fn first_packets_real(c: &mut Client) -> Result<(), String> {
     let (out, st) = c.run(&xt, test.len())?;
     let right = argmax_rows(&out, classes).iter().zip(&test).filter(|(p, &i)| p.0 == y[i] as usize).count();
     report(216, "First packets, own connections", &format!("{} real connections, {classes} servers", test.len()), &format!("{:.1}% matched to the right server (chance {:.1}%)", 100.0 * right as f32 / test.len() as f32, 100.0 / classes as f32), test.len(), st, None);
+    Ok(())
+}
+
+pub const CASES11: [Case; 1] = [(229, "real", nsl_neighbours)];
+
+/// 229. NSL-KDD with no model at all: each test connection takes the label of its nearest training
+/// connection, searching all 125,973 of them in blocks that fit the accelerator's memory.
+fn nsl_neighbours(c: &mut Client) -> Result<(), String> {
+    let k = nsl()?;
+    let (d, n, nt, block) = (k.d, k.ytest.len(), k.ytrain.len(), 8000usize);
+    let mut best = vec![(0usize, f32::MIN); n];
+    let mut st = Stats::default();
+    for b0 in (0..nt).step_by(block) {
+        let m = block.min(nt - b0);
+        let w = k.train[b0 * d..(b0 + m) * d].to_vec();
+        let bias: Vec<f32> = (0..m).map(|j| -0.5 * w[j * d..(j + 1) * d].iter().map(|v| v * v).sum::<f32>()).collect();
+        c.define(&[Layer { n_in: d, n_out: m, relu: false, w, b: bias }])?;
+        let (out, s) = c.run_argmax(&k.test, n)?;
+        add(&mut st, s);
+        for (q, (i, v)) in out.into_iter().enumerate() {
+            if v > best[q].1 {
+                best[q] = (b0 + i, v);
+            }
+        }
+    }
+    let alarm: Vec<bool> = best.iter().map(|b| k.ytrain[b.0] != 0).collect();
+    let right = (0..n).filter(|&i| alarm[i] == (k.ytest[i] != 0)).count();
+    let rate = |f: &dyn Fn(u8) -> bool| { let idx: Vec<usize> = (0..n).filter(|&i| f(k.ytest[i])).collect(); 100.0 * idx.iter().filter(|&&i| alarm[i]).count() as f32 / idx.len().max(1) as f32 };
+    report(229, "NSL-KDD nearest neighbour", &format!("{n} test against {nt} training connections"),
+        &format!("{:.1}% correct; attacks {:.1}% (DoS {:.0}, probe {:.0}, R2L {:.0}, U2R {:.0}), false alarms {:.1}%", 100.0 * right as f32 / n as f32, rate(&|l| l != 0), rate(&|l| l == 1), rate(&|l| l == 2), rate(&|l| l == 3), rate(&|l| l == 4), rate(&|l| l == 0)), n, st, None);
     Ok(())
 }
