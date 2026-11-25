@@ -19,6 +19,8 @@ Developed on a Microsoft Surface Pro 11 (Snapdragon X Plus, `x1p64100`) running 
 | MNIST 784-128-10 on the accelerator | 97.75%, same prediction as the CPU on all 10,000 test images (`npu/`) |
 | Speed, MNIST, per image | about 1.0 µs including the call from Linux, about 1.4 µs end to end (numpy on ten cores: 0.74 µs) |
 | First application | Network flow anomaly scoring (`ids/`), a demonstrator |
+| NPU server | Rust, standard library only; any program can use the accelerator over a local socket (`rust/`, `serve.sh`) |
+| Demonstrations | 24 of 25 run on the accelerator: math, cyber defence, networking, radio (`rust/src/bin/usecases/`) |
 | Convolution | Not started |
 
 This is research code from a single machine. Expect rough edges.
@@ -54,12 +56,22 @@ CLIENT=$PWD/npu/npu_client ./run.sh 30
 grep 'npu:' last-run.log
 ```
 
+Or start the server and run the demonstrations:
+
+```bash
+(cd rust && cargo build --release) && ./serve.sh start
+```
+
+```bash
+rust/target/release/usecases all
+```
+
 ## How it fits together
 
 | Layer | Piece | Source |
 |---|---|---|
 | Model and data | `npu/train_mnist.py`, `ids/ids.py` | ours (numpy) |
-| Linux client | `npu/npu_client.c`, `npu/npu_pack.h` | ours; talks FastRPC through `libhexagonrpc` and direct ioctls |
+| Linux client | `rust/` (server and client), `npu/npu_client.c` | ours; the Rust code calls the FastRPC ioctls directly |
 | Daemon | `hexagonrpcd` | linux-msm/hexagonrpc plus `patches/hexagonrpcd-npu-open.patch` |
 | Kernel | `fastrpc`, `qcom_q6v5_pas` | mainline |
 | DSP process | `npu/npu_skel.c`, `hmxops.S`, `hvxcopy.c` | ours; built with `clang --target=hexagon` |
@@ -78,10 +90,12 @@ grep 'npu:' last-run.log
 | `nn/` | 256-32-10 classifier on digits rendered from installed fonts |
 | `npu/` | Persistent-session runner for fully connected networks, MNIST, benchmark |
 | `ids/` | Network flow anomaly scoring on the accelerator |
+| `rust/` | Rust crate: NPU server, client library and the 25 demonstrations |
 | `patches/` | Our changes to `hexagonrpcd` |
 | `scripts/` | `fetch-deps.sh`: clone, patch and build `hexagonrpcd`; fetch references and MNIST |
 | `systemd/` | Template for the one-shot boot test |
-| `run.sh`, `cdsp78.sh`, `boot-run.sh` | Run a client; reload DSP firmware; boot test |
+| `run.sh`, `cdsp78.sh`, `boot-run.sh`, `serve.sh` | Run a client; reload DSP firmware; boot test; start or stop the NPU server |
+| `CLAUDE.md` | Working rules for contributors and AI assistants |
 | `docs/` | Setup, full technical record, journal |
 
 ## Documentation

@@ -118,6 +118,29 @@ asking. It was metadata, not code, but closer to the rules than it should have b
 - Licence chosen by the owner: MIT for our own code. The `hexagonrpcd` patch stays GPL-3.0-or-later
   because it modifies GPL-3 code.
 
+## 9. Rust server and 25 demonstrations (2026-11-25)
+
+- The owner asked to get every use case from the 25-idea list working without training, on the
+  accelerator, and said the CPU comparison lines were not wanted: "same score, just time
+  difference". The comparison is kept as a silent check and no longer printed.
+- I had started designing a C server; the owner asked for Rust and for the preference to be
+  written down. `CLAUDE.md` now holds the rules: prefer Rust, document meticulously, the
+  clean-room rules, and the DSP safety rules.
+- `rust/`: FastRPC ioctls called directly, tile conversion with inline NEON, a persistent session,
+  a Unix-socket server and client. Standard library only. It compiled and served on the first
+  build; one borrow error in the demonstration code.
+- New fact: asking for 4 MB of VTCM succeeds (the C client only asked for 1 MB).
+- 24 of the 25 demonstrations run. Fixes along the way:
+
+| Case | Problem | Fix |
+|---|---|---|
+| 10 lookalike domains | 11 flagged instead of 8: unrelated `.org` names resembled each other | Compare only the label before the last dot |
+| 20 modulation | 306 of 400: FSK was called BPSK | Looked at the median line strengths per type and set three rules; now 398 of 400 |
+| 23 matched filters | 13 extra hits | Not a bug: 12 are partial overlaps with a real sequence. Reported as such |
+| 22 fingerprinting | Cannot be done without real recordings | Printed as not run |
+
+- No DSP resets. Highest temperature 40 °C.
+
 ## DSP resets, in total
 
 | When | Cause |

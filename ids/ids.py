@@ -4,7 +4,8 @@
   ids.py features CAPTURE OUT.npz     packets -> one 32-feature record per flow per 5-second window
   ids.py train BENIGN.npz ATTACK.npz  train an autoencoder on benign flows (numpy, CPU); write model.bin, meta.json
   ids.py eval OUTPUTS.bin             score the accelerator's reconstructions and report detection quality
-  ids.py report FLOWS.npz OUTPUTS.bin list the most anomalous flows of a capture scored with the trained model
+  ids.py report FLOWS.npz MODEL OUTPUTS.bin  list the most anomalous flows of a capture scored with the trained model
+  ids.py export FLOWS.npz OUT.f32     raw feature rows for the Rust demonstrations (rust/src/bin/usecases)
 
 Only packet headers are used: addresses, ports, sizes, times and TCP flags. Addresses never enter the features."""
 import json, math, os, struct, subprocess, sys
@@ -151,6 +152,13 @@ def cmd_eval(outputs):
         print(f'{name:11s}: AUC {auc(s, y):.4f}  detected {100 * tp:.1f}% of {int((y == 1).sum())} attack records  false alarms {100 * fp:.1f}% of {int((y == 0).sum())} benign records')
     print(f'same alarm decision on {int(((s_npu > thr) == (s_cpu > thr)).sum())} of {len(y)} records; largest score difference {np.abs(s_npu - s_cpu).max():.4f} (threshold {thr:.4f})')
 
+def cmd_export(flows, out):
+    """Write a capture's raw flow features as u32 rows, u32 width, float32 data (for the Rust demonstrations)."""
+    X = np.load(flows)['X']
+    with open(out, 'wb') as f:
+        f.write(struct.pack('<2I', *X.shape)); f.write(X.astype('<f4').tobytes())
+    print(f'{len(X)} flow records -> {out}')
+
 def cmd_prepare(flows, out):
     """Normalise a capture's flow records with the trained model's statistics and write a model file to score them."""
     d = np.load(flows); mdl = np.load(f'{HERE}/model.npz')
@@ -167,6 +175,6 @@ def cmd_report(flows, model, outputs):
         print(f"  {s[i]:8.2f} {'ALARM' if s[i] > thr else '     '} {d['meta'][i]}   (most unusual: {', '.join(NAMES[j] for j in worst)})")
 
 if __name__ == '__main__':
-    cmds = dict(features=cmd_features, train=cmd_train, eval=cmd_eval, prepare=cmd_prepare, report=cmd_report)
+    cmds = dict(features=cmd_features, train=cmd_train, eval=cmd_eval, prepare=cmd_prepare, report=cmd_report, export=cmd_export)
     if len(sys.argv) < 2 or sys.argv[1] not in cmds: sys.exit(__doc__)
     cmds[sys.argv[1]](*sys.argv[2:])

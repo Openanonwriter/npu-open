@@ -42,3 +42,10 @@ __pycache__/
 
 # Logs
 *.log
+
+# Rust build output and server runtime files
+/rust/target/
+/npu.sock
+/server.pid
+/usecases.out
+*.f32

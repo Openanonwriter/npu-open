@@ -1,0 +1,11 @@
+[package]
+name = "npu"
+version = "0.1.0"
+edition = "2021"
+license = "MIT"
+description = "Server, client and demonstrations for the open Hexagon NPU path (standard library only)"
+
+[dependencies]
+
+[profile.release]
+opt-level = 3

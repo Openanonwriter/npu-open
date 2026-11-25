@@ -81,6 +81,9 @@ DSP library, copies it to `root/dsp/cdsp/`, and builds the Linux client.
 | `nn/` | Step 3: 256-32-10 classifier on font-rendered digits, one call per layer |
 | `npu/` | Step 4: persistent session, any layer widths, MNIST, benchmark |
 | `ids/` | First application: network flow anomaly scoring (section 18) |
+| `rust/` | Rust crate: FastRPC layer, tile conversion, session, `server` and `usecases` binaries (sections 19-20) |
+| `serve.sh` | Start, stop or query the NPU server |
+| `CLAUDE.md` | Working rules: prefer Rust, document everything, clean-room and safety rules |
 | `pv/` | Power-vote probe: times a fixed loop on the DSP around one request |
 | `root/dsp/cdsp/` | Directory the daemon serves to the DSP as its library path |
 | `fw78/` | Build-00078 cDSP firmware and device-tree file, copied from the Windows backup (not in git) |
@@ -483,3 +486,166 @@ To score live traffic:
 ```bash
 ids/live.sh 30
 ```
+
+## 19. The NPU server (`rust/`)
+
+Written in Rust with the standard library only (no crates). 1,727 lines including the
+demonstrations. Rust 1.100 from Fedora; `cargo build --release` needs no network.
+
+| Module | Role |
+|---|---|
+| `rust/src/fastrpc.rs` | The kernel's FastRPC ioctls, called directly through `extern "C" ioctl/mmap` |
+| `rust/src/tiles.rs` | float32 to FP16 tiles and back |
+| `rust/src/session.rs` | One persistent accelerator session on `libnpu_skel.so` |
+| `rust/src/proto.rs` | Unix-socket protocol and the client |
+| `rust/src/bin/server.rs` | `server`: accepts one client at a time on `npu.sock` |
+| `rust/src/bin/usecases/` | `usecases`: the 25 demonstrations (section 20) |
+
+Why a server: the FastRPC file descriptor only exists inside a process started by
+`hexagonrpcd -p`, and the accelerator session is tied to it. The server holds both and lets any
+number of short-lived programs use the accelerator through a socket.
+
+```bash
+./serve.sh start
+```
+
+```bash
+rust/target/release/usecases all
+```
+
+```bash
+./serve.sh stop
+```
+
+### FastRPC details the Rust code relies on
+
+All confirmed by the server working, unless marked.
+
+| Fact | Value | Known from |
+|---|---|---|
+| ioctl number | `(3 << 30) \| (size << 16) \| ('R' << 8) \| nr` | `_IOWR` in the kernel UAPI |
+| `INVOKE` | nr 3, `struct { u32 handle; u32 sc; u64 args; }` (16 bytes) | `misc/fastrpc.h` |
+| `ALLOC_DMA_BUFF` | nr 1, `struct { s32 fd; u32 flags; u64 size; }` (16 bytes) | `misc/fastrpc.h` |
+| `MEM_MAP` | nr 10, `struct fastrpc_mem_map`, 64 bytes with padding | `misc/fastrpc.h` |
+| Argument | `struct { u64 ptr; u64 length; s32 fd; u32 attr; }`, inputs first, then outputs | `misc/fastrpc.h` |
+| Return value | the DSP's return code; -1 with errno when the kernel refuses | experiment |
+| Opening a library | handle 0, method 0, 2 inputs and 2 outputs: `{ name_len, err_len }`, name with NUL, `{ handle, dlerr }`, error text | libhexagonrpc's definition; the hand-built call works |
+| Our own methods | words in buffer 0, each blob in its own buffer (`npu_skel.c` `blob()`) | our design |
+| Close call | sent with one dummy input word; a call with no buffers was not tried | assumption avoided |
+
+### Tile conversion in Rust
+
+- `fcvtn v.4h, v.4s` and `zip1` through `core::arch::asm!` convert four floats from each of two
+  rows and interleave them. These are base ARMv8 NEON, so no target feature flag is needed.
+  Rust's `f16` type and the NEON FP16 intrinsics are not stable, which is why it is inline
+  assembly.
+- FP16 to float32 for results is done with integer arithmetic (exact).
+
+### Session behaviour
+
+| Item | Value |
+|---|---|
+| VTCM requested | 4 MB first, then 1 MB. **4 MB was granted** (the C client only ever asked for 1 MB) |
+| VTCM page sizes | assumed to be powers of four (1, 4, 16 MB), so 2 and 8 MB are not tried; unverified |
+| Shared input buffer | 4 MB dma-buf, persistent mapping |
+| Shared output buffer | 2 MB dma-buf, persistent mapping, 128-byte header |
+| Batches per call | up to 32, limited by the shared buffer sizes |
+| Layers | up to 8; each ReLU or signed; a signed layer that is not last is merged on the DSP (slow path) |
+| Redefining the model | close (method 3), open again, load weights; the shared buffers are reused |
+| Power | MIPS request 2000 and latency hint 100 µs at every open |
+
+### Socket protocol (`npu.sock`, little-endian)
+
+| Request | Body | Reply after the status word |
+|---|---|---|
+| `M` define | u32 layers; per layer u32 n_in, n_out, relu; then per layer f32 weights `[n_out][n_in]`, f32 bias | u32 VTCM kilobytes |
+| `R` run | u32 rows; f32 `x[rows][n_in]` | u64 dsp_us, u64 wall_us, u64 pack_us, u32 calls, u32 n_out, f32 `y[rows][n_out]` |
+| `Q` quit | none | none |
+
+Every reply starts with u32 status: 0, or 1 followed by u32 length and a UTF-8 message.
+
+### Limits
+
+- One client at a time; a second connection waits.
+- The model must fit in VTCM: `nk * ng` tiles of 2 KB per layer (`nk` = inputs / 32, `ng` = outputs
+  / 32, both rounded up) plus the activation areas. With 4 MB that is roughly 2 million weights.
+- The socket has no authentication; it is a file in the project directory with the user's
+  permissions.
+- `serve.sh stop` sends `Q`, then SIGTERM to the idle daemon. It never sends SIGKILL.
+
+## 20. Twenty-five demonstrations (`rust/src/bin/usecases/`)
+
+Asked for by the owner: math, cyber defence, networking and radio, with no trained models and the
+work done on the accelerator. Nothing here uses gradient descent. Weights are random, analytic
+(Fourier transform, templates, steering vectors), counted (letter pairs, centroids) or fitted in
+closed form (PCA by Jacobi rotations, least squares by Cholesky), all hand-written in
+`usecases/util.rs`.
+
+Each line reports the accelerator's time per row on the DSP clock and the total including packing
+and the call. "verified" means the accelerator's output was compared with the same matrix product
+computed in float32 on the CPU and the largest difference was under 2-5% of the output's RMS; the
+CPU figure itself is not shown. Run of 2026-11-25:
+
+```
+ 1 | Batched matrix multiply      | 4096x256 times 256x128             | 268.4 billion multiply-adds/s, max error 0.22% of RMS |    0.12 us/row NPU,    0.63 us/row total | verified
+ 2 | Random projection            | 1024 dims to 64, 1024 vectors      | pairwise distances kept within 7.2% on average       |    0.42 us/row NPU,    1.31 us/row total | verified
+ 3 | PCA scoring                  | 4096 rows, 64 dims to 8 components | 99.7% of the variance captured                       |    0.04 us/row NPU,    0.26 us/row total | verified
+ 4 | Similarity search            | 4 queries against 182 text lines   | top hit for query 1: "- **Locking HMX without powering it rese..." |    2.25 us/row NPU,   42.25 us/row total | verified
+ 5 | Kernel random features       | 512 vectors to 1024 ReLU features  | kernel values reproduced within 7.9%                 |    0.16 us/row NPU,    0.86 us/row total | verified
+ 6 | Regression inference         | 8192 rows, 32 inputs, 16 targets   | R squared 0.9986 against held-out targets            |    0.03 us/row NPU,    0.24 us/row total | verified
+ 7 | Function surrogate           | 2 layers: 3 to 256 ReLU to 1       | RMS error 0.124 against sin(3a)+b*c                  |    0.06 us/row NPU,    0.29 us/row total | verified
+ 8 | Intrusion scoring (PCA)      | 7419 flow records, 32 features     | 100.0% of scan flows flagged, 2.4% false alarms      |    0.03 us/row NPU,    0.24 us/row total | verified
+ 9 | Log anomaly                  | 2102 kernel log lines              | 22 unusual lines; oddest: "random: crng init done"   |    0.08 us/row NPU,    0.53 us/row total | verified
+10 | Lookalike domains            | 16 names against 16 protected      | 8 flagged, e.g. paypa1.com resembles paypal.com      |    0.50 us/row NPU,   13.88 us/row total | verified
+11 | File triage                  | 120 files, byte histograms         | 120 of 120 sorted into program, text or compressed   |    0.09 us/row NPU,    1.02 us/row total | verified
+12 | Generated domain names       | 1000 names, 729 letter-pair weights | 98.4% of word-like and random names told apart       |    0.17 us/row NPU,    0.67 us/row total | verified
+13 | Packet-size patterns         | 19985 windows against 8 patterns   | 78 of 78 embedded patterns found, 0 false hits       |    0.02 us/row NPU,    0.21 us/row total | verified
+14 | Behaviour baseline           | 7419 flow records whitened         | median distance 2.8 for baseline, 42.7 for scan traffic |    0.02 us/row NPU,    0.24 us/row total | verified
+15 | Traffic clustering           | 7419 flows, 6 centres, 8 rounds    | 92.1% of flows in clusters that are all-scan or all-baseline |    0.03 us/row NPU,    0.23 us/row total | not checked
+16 | First-packet signatures      | 4000 connections against 64 signatures | 100.0% matched to the right signature                |    0.03 us/row NPU,    0.30 us/row total | verified
+17 | Link quality prediction      | 8192 samples, 8 features (synthetic) | R squared 0.9464 on unseen samples                   |    0.02 us/row NPU,    0.28 us/row total | verified
+18 | Latency forecasting          | 6000 one-step forecasts, 16 taps (synthetic) | RMS error 0.215 against 0.220 for repeating the last value |    0.03 us/row NPU,    0.25 us/row total | verified
+19 | Telemetry sketching          | 7419 flow records, 32 numbers to 8 | distances between records kept within 39% on average |    0.03 us/row NPU,    0.28 us/row total | verified
+20 | Modulation recognition       | 1200 spectra of 128 points (synthetic) | 398 of 400 bursts named correctly; per type [100, 100, 100, 98] of 100 (2-tone FSK, BPSK, QPSK, 8PSK) |    0.14 us/row NPU,
+21 | Spectrum occupancy           | 1024 frames, 128-point transform (synthetic) | occupied bins found: [10, 37, 90]                    |    0.15 us/row NPU,    0.62 us/row total | verified
+22 | Transmitter fingerprinting   | not run                            | needs recordings from real transmitters; no radio was attached
+23 | Matched-filter bank          | 29937 windows against 32 sequences | 66 of 66 buried sequences found at 0 dB; 13 extra hits, 12 beside a real one |    0.04 us/row NPU,    0.28 us/row total | verif
+24 | Beamforming                  | 2048 snapshots, 16 antennas, 91 directions | sources located at [-20.0, 36.0] degrees (true -20 and 36) |    0.06 us/row NPU,    0.46 us/row total | verified
+25 | Denoising                    | 4096 frames of 64 samples (synthetic) | signal-to-noise ratio raised from 5.2 dB to 15.4 dB  |    0.04 us/row NPU,    0.35 us/row total | verified
+```
+
+Where the data comes from:
+
+| Cases | Data |
+|---|---|
+| 1-3, 5-7 | Generated with a fixed-seed xorshift generator |
+| 4 | The lines of this document |
+| 8, 14, 15, 19 | The flow records captured for section 18 (`ids/ids.py export` writes them as `.f32`) |
+| 9 | This boot's kernel log (`journalctl -k -b`) |
+| 10 | A built-in list of 16 protected names and 16 candidates |
+| 11 | Files under `/usr/bin`, `/usr/share/man/man1`, `/usr/share/doc` |
+| 12 | `/usr/share/dict/words` (half for counting, half for testing) and random strings |
+| 13, 16-18, 20-25 | Synthetic; no radio was attached and no link statistics were recorded |
+
+What the results do and do not show:
+
+- **Weak results.** 18 (forecasting) barely beats repeating the last value (0.215 against 0.220):
+  the synthetic bursts are unpredictable by a linear filter. 19 (sketching to 8 numbers) distorts
+  distances by 39%, which is what 8 dimensions give. 15 (clustering) has no reference check.
+- **Hand-set thresholds.** 10, 13, 20, 21 and 23 use thresholds chosen by looking at these inputs.
+- **22 is not run.** Transmitter fingerprinting needs recordings of real transmitters.
+- **Synthetic is not real.** The radio and several networking cases show the arithmetic works on
+  the accelerator, not that the method survives real signals.
+- **Convolution is still absent.** 13 and 23 are one-dimensional convolutions run as a dense layer
+  over sliding windows prepared on the CPU, which multiplies the input data by the window length.
+
+Facts learned while building them:
+
+| Finding | Detail |
+|---|---|
+| Peak throughput | Case 1: about 270 billion multiply-adds per second on the DSP clock (4096 x 256 x 128 in about 0.5 ms) |
+| Small jobs are dominated by the call | Cases 4 and 10 (4 and 16 rows) cost 9-42 µs per row; cases with thousands of rows cost 0.2-0.4 µs |
+| Lookalike domains | Comparing whole names flagged three unrelated `.org` sites; comparing only the label before the last dot fixed it |
+| Modulation rules | With one threshold of 30, 92 of 100 FSK bursts were called BPSK. Median peak-to-average of x, x^2, x^4: FSK 18, 37, 31; BPSK 12, 118, 95; QPSK 14, 11, 95; 8PSK 13, 13, 9. Rules now: x^2 > 70 BPSK, else x^4 > 60 QPSK, else x^2 > 22 FSK, else 8PSK |
+| Matched filter extras | 13 hits beyond the 66 buried sequences; 12 are windows partly overlapping a buried sequence, 1 is a true false alarm |
+| Complex numbers | Carried as `[re..., im...]` rows with a real block matrix `[[Wr, -Wi], [Wi, Wr]]`; a 128-point transform is a 256 x 256 real matrix |

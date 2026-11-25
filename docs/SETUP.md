@@ -21,7 +21,7 @@ charging and sensors, and stopping it is reported to crash the whole SoC.
 ## 2. Packages (Fedora)
 
 ```bash
-sudo dnf install clang lld llvm qemu-user-static-hexagon meson ninja-build gcc git python3-numpy
+sudo dnf install clang lld llvm qemu-user-static-hexagon meson ninja-build gcc git python3-numpy rust cargo
 ```
 
 Optional, by component:
@@ -134,7 +134,38 @@ For evaluation, `ids/gen_attack.sh` generates scans against 127.0.0.1 only; capt
 while it runs, extract features to `cap/attack.npz`, then `python3 -I ids.py train cap/benign.npz
 cap/attack.npz`. Put `-s 96` before the `-i` options so it applies to every interface.
 
-## 7. When something fails
+## 7. The NPU server and the demonstrations
+
+The server is Rust with no external crates, so the build needs no network:
+
+```bash
+(cd rust && cargo build --release)
+```
+
+It needs the DSP library from `npu/build.sh` in `root/dsp/cdsp/`. Then:
+
+```bash
+./serve.sh start
+```
+
+```bash
+rust/target/release/usecases all
+```
+
+```bash
+./serve.sh stop
+```
+
+- `usecases` takes `math`, `cyber`, `net`, `radio`, `all`, or case numbers. `NPU_DEBUG=1` prints
+  extra diagnostics.
+- Cases 8, 14, 15 and 19 need flow records: after capturing (section 6),
+  `python3 -I ids/ids.py export ids/cap/benign.npz ids/cap/benign.f32`, and the same for `attack`.
+- Case 12 needs `/usr/share/dict/words` (package `words`).
+- The socket is `npu.sock` in the project folder (`NPU_SOCK` overrides it); the log is `server.log`.
+- To use the accelerator from your own Rust program, depend on the `npu` crate by path and use
+  `npu::proto::Client` (`define`, `linear`, `run`).
+
+## 8. When something fails
 
 | Symptom | Cause |
 |---|---|
@@ -145,6 +176,8 @@ cap/attack.npz`. Put `-s 96` before the `-i` options so it applies to every inte
 | DSP watchdog reset a few seconds after a run | The accelerator was locked without the power-on request |
 | A call with large buffers fails with `0x80000468` | Stock `hexagonrpcd` without our patch, or `HRPC_VADSP32=1` set |
 | `Could not fetch next FastRPC message` at the end of a run | Normal: the DSP process exited |
+| `serve.sh start` says the server did not come up | Usually the shell and firmware no longer match after a reboot or crash: run `./cdsp78.sh`, then start again |
+| `usecases`: cannot reach the NPU server | Run `./serve.sh start` |
 
 Error-code names are in `qcom-fastrpc/inc/AEEStdErr.h` (DSP errors are `0x80000400` plus the
 code).
