@@ -1,0 +1,16 @@
+# One-shot boot test: reload the DSP firmware into RAM and run the font-digit classifier once.
+# boot-run.sh disables this unit before doing anything, so a crash during boot cannot repeat.
+# Install: replace @ROOT@ with the repository path, copy to /etc/systemd/system/, then
+#   sudo systemctl daemon-reload && sudo systemctl enable npu-open-boot-test.service
+[Unit]
+Description=One-shot test: run the open NPU digit classifier after boot
+After=multi-user.target
+ConditionPathExists=@ROOT@/boot-run.sh
+
+[Service]
+Type=oneshot
+ExecStart=/usr/bin/bash @ROOT@/boot-run.sh
+TimeoutStartSec=180
+
+[Install]
+WantedBy=multi-user.target

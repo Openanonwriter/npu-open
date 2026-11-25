@@ -1,0 +1,44 @@
+# Qualcomm / Microsoft binaries: never commit. Each user supplies their own (docs/SETUP.md).
+/shell/
+/fw/
+/fw78/
+/hexagon-dsp-binaries/
+
+# Third-party checkouts and reference material fetched by scripts/fetch-deps.sh
+/hexagonrpc/
+/qcom-fastrpc/
+/ref/
+/data/
+
+# Captured network traffic and anything derived from it
+/ids/cap/
+/ids/www/
+/ids/model.bin
+/ids/model.npz
+/ids/meta.json
+/ids/outputs.bin
+/ids/live-model.bin
+/ids/live-out.bin
+
+# Trained models and build outputs
+*.bin
+*.npz
+*.o
+*.so
+/root/
+/add/client
+/add/emu_test
+/hmx/hmx_client
+/mm/mm_client
+/mm/mm2_client
+/nn/nn_client
+/npu/npu_client
+/npu/pack_test
+/npu/pack_test_portable
+/probe/probe_client
+/probe/p[0-9]*.c
+/pv/pv_client
+__pycache__/
+
+# Logs
+*.log

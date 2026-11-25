@@ -1,0 +1,195 @@
+diff --git a/hexagonrpcd/apps_mem.c b/hexagonrpcd/apps_mem.c
+index 1477f0b..2e5d296 100644
+--- a/hexagonrpcd/apps_mem.c
++++ b/hexagonrpcd/apps_mem.c
+@@ -36,8 +36,12 @@
+ #define ADSP_MMAP_REMOTE_HEAP_ADDR 8
+ #define ADSP_MMAP_ADD_PAGES   0x1000
+ 
++#define APPS_MEM_MAX_MAPS 64
++
+ struct apps_mem_ctx {
+ 	int fd;
++	/* The DSP is only told the low 32 bits of each mapping; remember the full address for unmapping. */
++	uint64_t maps[APPS_MEM_MAX_MAPS];
+ };
+ 
+ static uint32_t apps_mem_request_map64(void *data,
+@@ -87,8 +91,52 @@ static uint32_t apps_mem_request_map64(void *data,
+ 	       mmap.vaddrout);
+ #endif
+ 
++	for (size_t i = 0; i < APPS_MEM_MAX_MAPS; i++) {
++		if (ctx->maps[i] == 0) {
++			ctx->maps[i] = mmap.vaddrout;
++			break;
++		}
++	}
++
+ 	first_out->vapps = 0;
+-	first_out->vadsp = mmap.vaddrout & 0xFFFFFFFF;
++	first_out->vadsp = getenv("HRPC_VADSP32") ? (mmap.vaddrout & 0xFFFFFFFF) : mmap.vaddrout;  /* npu-open: pass the full address, as qualcomm/fastrpc does */
++	return 0;
++}
++
++static uint32_t apps_mem_request_unmap64(void *data,
++					 const struct fastrpc_io_buffer *inbufs,
++					 struct fastrpc_io_buffer *outbufs)
++{
++	struct apps_mem_ctx *ctx = data;
++	const struct {
++		uint64_t vadsp;
++		uint64_t len;
++	} *first_in = inbufs[0].p;
++	struct fastrpc_req_munmap munmap;
++	size_t slot = APPS_MEM_MAX_MAPS;
++	int ret;
++
++	munmap.vaddrout = first_in->vadsp;
++	munmap.size = first_in->len;
++	for (size_t i = 0; i < APPS_MEM_MAX_MAPS; i++) {
++		if (ctx->maps[i] && (ctx->maps[i] & 0xFFFFFFFF) == (first_in->vadsp & 0xFFFFFFFF)) {
++			munmap.vaddrout = ctx->maps[i];
++			slot = i;
++			break;
++		}
++	}
++
++	ret = ioctl(ctx->fd, FASTRPC_IOCTL_MUNMAP, &munmap);
++#if HEXAGONRPC_VERBOSE
++	printf("munmap(%" PRIx64 ", %" PRIu64 ") -> %d\n", (uint64_t) munmap.vaddrout, (uint64_t) munmap.size, ret);
++#endif
++	if (ret) {
++		fprintf(stderr, "Memory unmap failed: %s\n", hexagonrpc_strerror(ret));
++		return ret;
++	}
++	if (slot < APPS_MEM_MAX_MAPS)
++		ctx->maps[slot] = 0;
++
+ 	return 0;
+ }
+ 
+@@ -129,7 +177,7 @@ static const struct fastrpc_function_impl apps_mem_procs[] = {
+ 	{ .def = NULL, .impl = NULL, },
+ 	{ .def = NULL, .impl = NULL, },
+ 	{ .def = &apps_mem_request_map64_def, .impl = apps_mem_request_map64, },
+-	{ .def = NULL, .impl = NULL, },
++	{ .def = &apps_mem_request_unmap64_def, .impl = apps_mem_request_unmap64, },
+ 	{ .def = NULL, .impl = NULL, },
+ 	{ .def = NULL, .impl = NULL, },
+ };
+diff --git a/hexagonrpcd/interface/apps_mem.c b/hexagonrpcd/interface/apps_mem.c
+index 018043f..bdacb37 100644
+--- a/hexagonrpcd/interface/apps_mem.c
++++ b/hexagonrpcd/interface/apps_mem.c
+@@ -40,3 +40,16 @@ const struct hrpc_method_def_interp4 apps_mem_request_map64_def = {
+ 	.n_inner_types = 0,
+ 	.inner_types = NULL,
+ };
++
++static struct hrpc_arg_def_interp4 apps_mem_request_unmap64_args[] = {
++	{ HRPC_ARG_WORD, sizeof(uint64_t) },
++	{ HRPC_ARG_WORD, sizeof(uint64_t) },
++};
++
++const struct hrpc_method_def_interp4 apps_mem_request_unmap64_def = {
++	.msg_id = 3,
++	.n_args = HRPC_ARRAY_SIZE(apps_mem_request_unmap64_args),
++	.args = apps_mem_request_unmap64_args,
++	.n_inner_types = 0,
++	.inner_types = NULL,
++};
+diff --git a/hexagonrpcd/interface/apps_mem.h b/hexagonrpcd/interface/apps_mem.h
+index 6e7da96..f90ec7f 100644
+--- a/hexagonrpcd/interface/apps_mem.h
++++ b/hexagonrpcd/interface/apps_mem.h
+@@ -25,5 +25,6 @@
+ #include <libhexagonrpc/hexagonrpc.h>
+ 
+ extern struct hrpc_method_def_interp4 apps_mem_request_map64_def;
++extern const struct hrpc_method_def_interp4 apps_mem_request_unmap64_def;
+ 
+ #endif /* INTERFACE_APPS_MEM_H */
+diff --git a/hexagonrpcd/rpcd.c b/hexagonrpcd/rpcd.c
+index 600237b..633bca3 100644
+--- a/hexagonrpcd/rpcd.c
++++ b/hexagonrpcd/rpcd.c
+@@ -81,7 +81,7 @@ static void print_usage(const char *argv0)
+ 	       "\t-h\t\tPrint help and exit\n");
+ }
+ 
+-static int create_shell_pd(int fd, const char *create_shell)
++static int create_shell_pd(int fd, const char *create_shell, bool unsigned_pd)
+ {
+ 	char *buf;
+ 	int shellfd, ret;
+@@ -93,6 +93,9 @@ static int create_shell_pd(int fd, const char *create_shell)
+ 		.siglen = 0,
+ 	};
+ 
++	if (unsigned_pd)
++		init.attrs |= FASTRPC_MODE_UNSIGNED_MODULE;
++
+ 	shellfd = open(create_shell, O_RDONLY);
+ 	if (shellfd == -1) {
+ 		fprintf(stderr, "Could not open %s: %s\n",
+@@ -109,8 +112,10 @@ static int create_shell_pd(int fd, const char *create_shell)
+ 	dmabuf.flags = 0;
+ 
+ 	ret = ioctl(fd, FASTRPC_IOCTL_ALLOC_DMA_BUFF, &dmabuf);
+-	if (ret)
++	if (ret) {
++		perror("ALLOC_DMA_BUFF");
+ 		goto err_close_fd;
++	}
+ 
+ 	buf = mmap(NULL, dmabuf.size, PROT_WRITE, MAP_SHARED, dmabuf.fd, 0);
+ 	if (buf == MAP_FAILED) {
+@@ -124,7 +129,11 @@ static int create_shell_pd(int fd, const char *create_shell)
+ 	init.filefd = dmabuf.fd;
+ 	init.filelen = stats.st_size;
+ 
++	errno = 0;
+ 	ret = ioctl(fd, FASTRPC_IOCTL_INIT_CREATE, &init);
++	if (ret)
++		fprintf(stderr, "INIT_CREATE(attrs=0x%x, filelen=%u, filefd=%d): ret=%d (0x%x) errno=%d %s\n",
++			init.attrs, init.filelen, init.filefd, ret, ret, errno, strerror(errno));
+ 
+ 	munmap(buf, dmabuf.size);
+ err_close_dmabuf:
+@@ -356,6 +365,7 @@ int main(int argc, char* argv[])
+ 	size_t n_progs = 0;
+ 	int fd, ret, opt;
+ 	bool attach_sns = false;
++	bool unsigned_pd = false;
+ 
+ 	progs = malloc(sizeof(const char *) * argc);
+ 	if (progs == NULL) {
+@@ -373,7 +383,7 @@ int main(int argc, char* argv[])
+ 	if (guessed_device_dir != NULL)
+ 		device_dir = guessed_device_dir;
+ 
+-	while ((opt = getopt(argc, argv, "c:d:f:p:R:sh")) != -1) {
++	while ((opt = getopt(argc, argv, "c:d:f:p:R:shu")) != -1) {
+ 		switch (opt) {
+ 			case 'c':
+ 				create_shell = optarg;
+@@ -394,6 +404,9 @@ int main(int argc, char* argv[])
+ 			case 's':
+ 				attach_sns = true;
+ 				break;
++			case 'u':
++				unsigned_pd = true;
++				break;
+ 			case 'h':
+ 				print_usage(argv[0]);
+ 				goto free_pids;
+@@ -420,7 +433,7 @@ int main(int argc, char* argv[])
+ 	if (attach_sns)
+ 		ret = ioctl(fd, FASTRPC_IOCTL_INIT_ATTACH_SNS, NULL);
+ 	else if (create_shell != NULL)
+-		ret = create_shell_pd(fd, create_shell);
++		ret = create_shell_pd(fd, create_shell, unsigned_pd);
+ 	else
+ 		ret = ioctl(fd, FASTRPC_IOCTL_INIT_ATTACH, NULL);
+ 	if (ret) {
