@@ -427,8 +427,8 @@ aDSP and sensor service were never affected.
 Background reading: [Surface Pro 11 NPU guide](https://github.com/denisix/ubuntu-surface-pro-11),
 [Yoga Slim 7x NPU guide](https://github.com/hastyheat-com/x1e-yoga-slim7x-npu-linux).
 
-Our own code in this directory has no licence chosen yet. The patched `hexagonrpcd` is a
-derivative of GPL-3 code.
+Our own code is under the MIT licence (`LICENSE`). The `hexagonrpcd` patch modifies GPL-3 code and is
+GPL-3.0-or-later (`patches/README.md`).
 
 ## 18. First application: network flow anomaly scoring (`ids/`)
 

@@ -115,6 +115,8 @@ asking. It was metadata, not code, but closer to the rules than it should have b
 - `.gitignore` keeps Qualcomm and Microsoft binaries, third-party checkouts, datasets, trained
   models and all captured traffic out of the repository.
 - `scripts/fetch-deps.sh` rebuilds the open-source dependencies from scratch.
+- Licence chosen by the owner: MIT for our own code. The `hexagonrpcd` patch stays GPL-3.0-or-later
+  because it modifies GPL-3 code.
 
 ## DSP resets, in total
 

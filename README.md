@@ -36,8 +36,7 @@ This is research code from a single machine. Expect rough edges.
 - **Firmware is loaded into RAM only.** `cdsp78.sh` restarts the compute DSP on a firmware pair
   from `fw78/` without touching `/lib/firmware`. It has to be rerun after every boot and after
   every DSP crash.
-- **No licence has been chosen yet** for the code in this repository. The patch in `patches/` is
-  a derivative of GPL-3 code.
+- **Unofficial.** This project is not affiliated with or endorsed by Qualcomm or Microsoft.
 
 ## Quick start
 
@@ -102,6 +101,11 @@ grep 'npu:' last-run.log
 - Knowledge comes from open-licensed source (LLVM, llama.cpp, qualcomm/fastrpc, hexagonrpc),
   Qualcomm's public HMX manual, and experiments on our own hardware.
 - Every finding is written down, including the ones that did not work.
+
+## Licence
+
+MIT, see [LICENSE](LICENSE). One exception: `patches/hexagonrpcd-npu-open.patch` modifies GPL-3 code and
+is GPL-3.0-or-later (see [patches/README.md](patches/README.md)). No Qualcomm or Microsoft files are included.
 
 ## Sources
 
