@@ -216,6 +216,25 @@ In order:
 Not done: shared memory between client and server (the obvious next step), a multi-threaded FFT reference,
 decoding the mismatched sessions to confirm they are different protocols, DSP-side energy.
 
+## 12. Operation sweep (2026-11-25)
+
+Asked: what operations can it do, can a custom C++ or Rust kernel be written, can threads be dispatched to it.
+Ten minutes. Numbers: TECHNICAL.md section 23.
+
+1. Probed 32 runtime names (threads, mutexes, memory, C maths, compiler support): all exported by the shell.
+2. Wrote `ops/` in freestanding C++ with 13 operations compiled twice (scalar and HVX). First build had no
+   vector instructions at all: `-mhvx` does not enable auto-vectorisation; `-fvectorize -mllvm -hexagon-autohvx`
+   does (287 HVX instructions). My first check for vector instructions also used a wrong search pattern.
+3. Ran it: 13 of 13 correct in both builds, HVX 29-132 times faster than the scalar cores on integer work;
+   float and table lookup are not vectorised.
+4. Threads through `pthread_create`: up to 8 created, all results correct; time flat up to 4.
+5. C library: qsort, sqrtf, sinf, expf, 64-bit divide, double multiply all correct.
+6. Matrix accelerator sweep (case 140): 18 of 18 operation kinds correct.
+7. Rust for the DSP: the compiler knows the target but has no core library for it here; not attempted.
+
+Not done: HVX float, HVX or HMX inside spawned threads, the `qurt_*` thread calls (signatures unknown), a clock
+request in the `ops` library, Rust on the DSP.
+
 ## DSP resets, in total
 
 | When | Cause |

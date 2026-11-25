@@ -7,8 +7,8 @@ These rules come from the project owner. They apply to every change.
 - **Prefer Rust** for new programs on the Linux side: servers, clients, tools, tests.
 - Standard library only unless a crate is clearly worth it; say why in the docs when one is added.
 - Exceptions that stay as they are:
-  - DSP-side code is C and assembly, built with `clang --target=hexagon` (there is no usable Rust
-    target for the Hexagon DSP).
+  - DSP-side code is C, C++ and assembly, built with `clang --target=hexagon`. `rustc` lists Hexagon
+    targets but no `core` library is installed for them; Rust on the DSP is untried (TECHNICAL.md 23.8).
   - Existing C clients and Python scripts are kept working; port them when they are next touched.
 
 ## Documentation: always, and meticulously

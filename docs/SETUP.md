@@ -112,6 +112,7 @@ read `last-run.log`.
 | Matrix multiply | `mm/build.sh` | `CLIENT=$PWD/mm/mm2_client ./run.sh 9` |
 | Font digits | `python3 nn/train.py` (run inside `nn/`), `nn/build.sh` | `CLIENT=$PWD/nn/nn_client ./run.sh 15` |
 | MNIST | `python3 -I npu/train_mnist.py data/mnist npu/mnist-128.bin 128`, `npu/build.sh` | `CLIENT=$PWD/npu/npu_client ./run.sh 30` |
+| Operation sweep (C++, HVX, threads) | `ops/build.sh`, `(cd rust && cargo build --release)` | `CLIENT=$PWD/rust/target/release/ops ./run.sh 40`, then `grep 'ops:' last-run.log` |
 | Flow anomaly scoring | see below | `ids/live.sh 30` |
 
 `npu_client` settings (environment variables): `MODEL` (model file), `NB` (batches of 32 per call,

@@ -7,6 +7,7 @@ mod cyber;
 mod math;
 mod net;
 mod radio;
+mod opsweep;
 mod radioid;
 mod real;
 mod util;
@@ -34,6 +35,7 @@ fn cases() -> Vec<Case> {
     v.extend(real::CASES11);
     v.extend(real::CASES12);
     v.extend(radioid::CASES);
+    v.extend(opsweep::CASES);
     v
 }
 

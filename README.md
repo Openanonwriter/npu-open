@@ -24,6 +24,7 @@ Developed on a Microsoft Surface Pro 11 (Snapdragon X Plus, `x1p64100`) running 
 | Real data | 27 real-data results: NSL-KDD 85.0%, MNIST 96.2% by nearest neighbour and 94.1% with a closed-form model, OOK/FSK on 164 off-air recordings 87%, live flow scoring with 1.1% false alarms (TECHNICAL.md section 21) |
 | Accelerator throughput | 2.3 trillion FP16 multiply-adds per second on the DSP clock, verified; about 200-240 billion per second end to end |
 | Radio identification, NPU against CPU | 46 device types from 776 off-air recordings: 97.7% on both; across recording sessions 82.3% on both. In-process the NPU is 2.7-5.1 times faster than ten CPU threads on the same matrices; through the server it is socket-bound (TECHNICAL.md section 22) |
+| Operation sweep | C++ on the DSP: 13 of 13 scalar and HVX operations correct, HVX 29-132 times faster than the DSP's scalar cores; POSIX threads work, 4 run in parallel; matrix accelerator 18 of 18 operation kinds correct (TECHNICAL.md section 23) |
 | Convolution | Not started |
 
 This is research code from a single machine. Expect rough edges.
@@ -91,6 +92,7 @@ rust/target/release/usecases all
 | `pv/` | Measures the effect of power and clock requests |
 | `mm/` | One 32x32 FP16 matrix multiply, uniform and random |
 | `nn/` | 256-32-10 classifier on digits rendered from installed fonts |
+| `ops/` | C++ operation sweep on the DSP: scalar, HVX, threads, C library |
 | `npu/` | Persistent-session runner for fully connected networks, MNIST, benchmark |
 | `ids/` | Network flow anomaly scoring on the accelerator |
 | `rust/` | Rust crate: NPU server, client library and the 25 demonstrations |

@@ -928,3 +928,115 @@ Facts:
 | `./serve.sh stop; NPU_DIRECT=1 CLIENT=$PWD/rust/target/release/usecases ./run.sh 25; grep -E '^134\|^    \|' last-run.log; ./serve.sh start` | Case 134, NPU in-process. The server is stopped first: two DSP processes sharing the accelerator is untested |
 
 No DSP reset in this session. Highest temperature read 34.8 C.
+
+## 23. Operation sweep: what the DSP and the accelerator can execute (2026-11-25)
+
+A ten-minute session. Code: `ops/` (C++ on the DSP), `rust/src/bin/ops.rs` (client and CPU reference),
+`rust/src/bin/usecases/opsweep.rs` (case 140). Everything is experiment unless a source is named.
+
+### 23.1 The three compute units
+
+| Unit | What it executes | How we use it |
+|---|---|---|
+| Hexagon scalar cores | Any compiled code: integer, 64-bit, single-precision float in hardware; branches, memory, threads | C or C++ built with `clang --target=hexagon-unknown-none-elf -mv73` |
+| HVX vector unit | 1,024-bit integer vectors: add, subtract, multiply, compare, select, shift, logic, population count | The same C++ built with `-mhvx -mhvx-length=128B -fvectorize -mllvm -hexagon-autohvx`; `qurt_hvx_lock(1)` first |
+| HMX matrix unit | One primitive: FP16 multiply-accumulate over tiles, bias, convert, clamp at zero | Hand-emitted instruction words (section 8), driven as layers `y = W x + b` |
+
+### 23.2 Runtime functions the shell exports (probe, all 32 names resolved)
+
+`pthread_create`, `pthread_join`, `pthread_attr_init`, `pthread_attr_setstacksize`, `pthread_attr_setstackaddr`,
+`pthread_mutex_init`, `pthread_mutex_lock`, `pthread_mutex_unlock`, `qurt_thread_create`, `qurt_thread_join`,
+`qurt_thread_get_id`, `qurt_thread_exit`, `qurt_mutex_init`, `qurt_mutex_lock`, `qurt_mutex_unlock`,
+`qurt_signal_wait`, `qurt_timer_sleep`, `qurt_sysenv_get_max_hw_threads`, `qurt_hvx_get_units`, `malloc`, `free`,
+`memalign`, `memcpy`, `memset`, `qsort`, `sqrtf`, `sinf`, `expf`, `printf`, `HAP_debug_v2`, `__hexagon_divsi3`,
+`__hexagon_muldf3`. Also used and resolved at load: `__hexagon_udivdi3`.
+
+Only the existence of the names is known from the probe. We call them with the standard C and POSIX
+signatures; the `qurt_*` signatures are not known to us and those functions were not called, except
+`qurt_thread_get_id()` (assumed: no arguments, returns an integer; it returned distinct values per thread).
+
+### 23.3 C++ on the DSP
+
+`ops/ops_skel.cpp` is freestanding C++17: classes, templates and lambdas work. Flags: `-fno-exceptions -fno-rtti
+-fno-threadsafe-statics -fno-use-cxa-atexit`. Not used and untested: exceptions, RTTI, global constructors,
+the C++ standard library (none is linked). The library keeps the two-segment layout of section 6.
+
+Auto-vectorisation needs `-fvectorize -mllvm -hexagon-autohvx`. With `-mhvx` alone the compiler emitted no
+vector instructions at all (first build: 0 HVX instructions; with the flags: 287).
+
+### 23.4 Scalar and HVX operations (65,536 elements, 16 repeats, DSP clock, no clock request made)
+
+Each result is checksummed on the DSP and compared with the same operation computed in Rust on the CPU.
+13 of 13 correct in both builds.
+
+| Operation | Scalar ns/element | HVX ns/element | HVX gain | One CPU core ns/element |
+|---|---|---|---|---|
+| 8-bit add, saturating | 6.33 | 0.06 | 112x | 0.16 |
+| 8-bit absolute difference | 7.18 | 0.06 | 130x | 0.07 |
+| 8-bit rounding average | 7.18 | 0.09 | 81x | 0.07 |
+| Bitwise xor / and / or | 7.18 | 0.05 | 132x | 0.07 |
+| Shifts | 4.94 | 0.08 | 61x | 0.07 |
+| 8x8 -> 16-bit multiply | 6.33 | 0.08 | 76x | 0.18 |
+| Dot product (sum of products) | 4.57 | 0.13 | 35x | 0.07 |
+| Sum of absolute differences | 5.53 | 0.19 | 29x | 0.35 |
+| Compare and select | 4.12 | 0.04 | 96x | 0.07 |
+| Population count | 5.68 | 0.08 | 73x | 0.07 |
+| 32-bit multiply-add | 9.32 | 0.19 | 48x | 0.39 |
+| float32 multiply-add | 11.80 | 11.64 | 1x (not vectorised) | 0.27 |
+| Table lookup | 6.71 | 6.71 | 1x (not vectorised) | 0.07 |
+
+- The scalar cores are slow here (no MIPS request was made in this library, see section 7); HVX on 8-bit data is
+  about level with one CPU core using NEON.
+- The CPU column is a plain Rust loop including allocation of the result, so it is a rough reference only.
+- Float vectors on HVX (`-mhvx-ieee-fp`, `-mhvx-qfloat`) were not tried.
+
+### 23.5 Threads on the DSP
+
+`pthread_create` with an attribute object set to a 16,384-byte stack (the object is a 512-byte buffer only
+passed to the library; its layout is unknown to us). Each thread runs 20,000,000 steps of an integer generator.
+
+| Threads | Time | Results correct | Distinct thread ids |
+|---|---|---|---|
+| 1 | 0.071 s | 1 of 1 | 1 |
+| 2 | 0.076 s | 2 of 2 | 2 |
+| 3 | 0.076 s | 3 of 3 | 3 |
+| 4 | 0.077 s | 4 of 4 | 4 |
+| 6 | 0.107 s | 6 of 6 | 6 |
+| 8 | 0.148 s | 8 of 8 | 8 |
+
+Time is flat up to four threads and then rises by half and double: the process gets four hardware threads
+(inferred from timing; `qurt_sysenv_get_max_hw_threads` was not called because its argument layout is unknown).
+Not tested: HVX or HMX inside spawned threads, thread priorities, a default (NULL) attribute.
+
+### 23.6 C library
+
+`qsort` of 4,096 numbers: correct, 1,862 us. `sqrtf(2)` = 1.4142135, `sinf(1)` = 0.841471, `expf(1)` = 2.7182817.
+64-bit divide (support routine from the shell): correct. Double multiply: correct. `malloc`, `memalign`,
+`free`: work.
+
+### 23.7 Matrix accelerator operations (case 140; 4,096 rows of 256 values)
+
+All 18 correct against float32 on the CPU (worst error 0.15-0.42% of RMS, FP16): dense multiply; add a
+constant; clamp at zero; copy; scale; negate; absolute value (two clamps summed by a second layer); reverse /
+permute; pick columns; sum of a row; mean of a row; difference of neighbours; moving average (1-D convolution
+as a matrix); average pooling; cosine transform; threshold; two layers chained on the DSP; largest output per
+row (4,092 of 4,096 rows agree, near-ties). DSP time 0.3-0.9 ms per 4,096 rows; 1-2 ms end to end.
+
+Not expressible as one layer: the product of two inputs, division, square root, sorting, anything
+data-dependent. Those go to HVX or scalar code in the same DSP process.
+
+### 23.8 Rust on the DSP: not tried
+
+`rustc 1.100.0` lists `hexagon-unknown-none-elf` and `hexagon-unknown-qurt`, but no `core` library is installed
+for them and `rust-src` is absent, so nothing can be built without downloading it (`-Zbuild-std=core` on
+nightly, or with `rust-src`). Not done in this session; the DSP side stays C, C++ and assembly.
+
+### 23.9 Running it
+
+| Command | Does |
+|---|---|
+| `ops/build.sh` | Builds `libops_skel.so`, prints the LOAD segment count, the imports and the number of HVX instructions |
+| `CLIENT=$PWD/rust/target/release/ops ./run.sh 40; grep 'ops:' last-run.log` | Scalar, HVX, thread and library sweep (server stopped) |
+| `./serve.sh start; rust/target/release/usecases 140` | Matrix accelerator sweep |
+
+No DSP reset. The first run of every method worked.

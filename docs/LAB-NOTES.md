@@ -119,3 +119,13 @@ ids/watch.sh; scripts/prep_real.py.
 Findings: same accuracy on NPU and CPU; NPU via the server is socket-bound; in-process with full calls it is
 2.7-5.1 times faster than ten CPU threads on the same matrices and about twice as fast as a one-core FFT; it
 uses 9-25 times less processor time. No DSP reset.
+
+## Operation sweep (2026-11-25, 07:26 start, 10 minutes allowed)
+
+| Time | Note |
+|---|---|
+| 07:26 | Probe of 32 thread, memory and maths names: all exported |
+| 07:28 | C++ kernel built; no HVX instructions until `-mllvm -hexagon-autohvx` was added |
+| 07:29 | Sweep: 13/13 operations correct, HVX 29-132x over scalar; 8 threads run, 4 in parallel; C library correct |
+| 07:30 | Matrix accelerator: 18/18 operation kinds correct |
+| 07:31 | Rust target for the DSP: no core library installed; not attempted. Writing up |
