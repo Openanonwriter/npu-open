@@ -429,7 +429,7 @@ fn active_frames(p: &[f32]) -> (Vec<usize>, Vec<f32>) {
     ((0..e.len()).filter(|&f| e[f] > thr).collect(), e)
 }
 
-fn dft128() -> Vec<f32> {
+pub fn dft128() -> Vec<f32> {
     let n = 128usize;
     let s = 1.0 / (n as f32).sqrt();
     let mut w = vec![0f32; 4 * n * n];
@@ -448,7 +448,7 @@ fn dft128() -> Vec<f32> {
 
 /// 100 numbers describing one recording, all derived from the accelerator's spectra: where the strongest
 /// bin sits from frame to frame, the average spectrum around it, and how steady the energy is.
-fn radio_features(p: &[f32]) -> (Vec<f32>, f32) {
+pub fn radio_features(p: &[f32]) -> (Vec<f32>, f32) {
     let (act, e) = active_frames(p);
     let peak = |f: usize| (1..128).max_by(|&a, &b| p[f * 128 + a].partial_cmp(&p[f * 128 + b]).unwrap()).unwrap();
     let mut votes = [0u32; 128];

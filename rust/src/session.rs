@@ -59,6 +59,9 @@ const RUN_FLAGS: u32 = 7;
 /// MIPS performance request and sleep-latency hint sent with open (see docs/TECHNICAL.md, section 9).
 const MIPS: u32 = 2000;
 const LATENCY_US: u32 = 100;
+/// Most batches of 32 rows sent in one FastRPC call (the shared buffers may allow fewer). 32 until the radio
+/// session; raised because each call costs about 0.35 ms whatever it carries (experiment, TECHNICAL.md 22).
+const MAX_BATCHES: usize = 256;
 
 impl Session {
     /// Uses the FastRPC fd inherited from `hexagonrpcd -p` (environment variable HEXAGONRPC_FD).
@@ -156,7 +159,7 @@ impl Session {
         let last = layers.last().unwrap();
         let (nk0, og, last_signed) = (tiles_for(layers[0].n_in), tiles_for(last.n_out), !last.relu);
         let per = if last_signed { 2 * og } else { og };
-        let batches_per_call = 32.min(IN_BYTES / (nk0 * TILE_BYTES)).min((OUT_BYTES - HEADER) / (per * TILE_BYTES));
+        let batches_per_call = MAX_BATCHES.min(IN_BYTES / (nk0 * TILE_BYTES)).min((OUT_BYTES - HEADER) / (per * TILE_BYTES));
         if batches_per_call == 0 {
             return Err("layer too wide for the shared buffers".into());
         }

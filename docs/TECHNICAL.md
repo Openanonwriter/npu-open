@@ -794,3 +794,137 @@ Replaces the autoencoder of section 18 for live use. Needs the server running an
 It fits the whitened distance on the baseline, scores the capture on the accelerator, and for the ten oddest
 flows prints the score and the single feature furthest from the baseline in standard deviations.
 `ids/watch.sh 30` repeats it until interrupted, printing the summary line and any alarms.
+
+## 22. Radio identification on real recordings, NPU against CPU (2026-11-25)
+
+A 30-minute session (about 14 minutes used for experiments). Code: `rust/src/bin/usecases/radioid.rs`, cases
+130-134. Everything here is experiment unless a source is named.
+
+### 22.1 Data
+
+| Item | Value |
+|---|---|
+| Source | merbanan/rtl_433_tests on GitHub (`tests/<device>/<folder>/*.cu8`), downloaded file by file from `raw.githubusercontent.com` |
+| Format | Unsigned 8-bit I/Q, 250 kS/s (files with `1024k` or `1000k` in the name were left out); the first 2 MB (about 4.2 s) of each file is used |
+| Size filter | 60 kB to 4 MB per file |
+| Same-session set (`data/rtl433id/index.txt`) | 46 device folders with 10 or more recordings, one folder per device family, at most 24 recordings each: 776 recordings, 437 s of radio |
+| Cross-session set (`index-sessions.txt`) | 11 families whose folders are numbered (`01`, `02`, ...), at most 4 folders and 12 recordings per folder: 299 recordings, 172 s of radio |
+| On disk | 389 MB, 1,188 files (some were downloaded for a first, narrower selection and are unused) |
+
+Assumption: numbered folders of one family are different recording sessions of the same protocol. The file names
+show this is not always true (see 22.4).
+
+### 22.2 Method
+
+Every stage is a matrix product, so one `Engine` trait runs the identical pipeline on the NPU (through the
+server), on the NPU in-process, or on the CPU (float32, rows split over threads, dot products written with 16
+independent sums so the compiler emits NEON).
+
+| Stage | Matrix | What it gives |
+|---|---|---|
+| A. Spectra | 256 -> 256 (128-point DFT of every frame) | 100 numbers per recording from `radio_features` (section 21): how the strongest bin moves, average spectrum shape, duty |
+| B. Timing | 1024 -> 512 (first 256 DFT bins of a burst window) | Magnitude spectrum of the envelope and of the frequency (phase step), each averaged over up to 8 bursts; 256 + 256 numbers. Shift-invariant, so burst alignment does not matter |
+| C. Identify | 612 -> fitted recordings (nearest), and 612 -> 1024 ReLU -> classes | Nearest fitted recording; random features with a ridge readout solved by Cholesky |
+
+- Burst windows: the signal is reduced by 4 (62.5 kS/s); a window of 1,024 samples (16.4 ms) starts 8 samples
+  before the amplitude first exceeds `median + 0.25 x (99.9th percentile - median)`.
+- Frequency channel: phase step per sample in units of pi, zeroed where there is no signal, mean removed (the
+  tuning offset).
+- Each of the three feature blocks is scaled to unit length.
+- Nothing is trained by gradient descent.
+
+### 22.3 Results: accuracy
+
+| Case | Test | NPU nearest | NPU readout | CPU nearest | CPU readout | Same answer NPU/CPU |
+|---|---|---|---|---|---|---|
+| 130 | 46 devices; recordings of each device alternate between fitting (392) and testing (384) | 96.9% | 97.7% | 96.6% | 97.7% | 383 and 384 of 384 |
+| 131 | 11 protocols; first session fitted (110), other sessions tested (189) | 78.8% | 79.4% | 78.3% | 79.4% | 186 and 189 of 189 |
+| 133 | 11 protocols; each session tested against a fit on all the others (299 tested) | 79.6% | 82.3% | 78.9% | 82.3% | 297 and 295 of 299 |
+
+The NPU and CPU give the same accuracy. The few differing answers are near-ties decided by FP16 rounding.
+
+### 22.4 What the accuracy means
+
+- Case 130 is the easy case and 97% overstates it: fitted and tested recordings of a device come from one
+  folder, usually the same transmitter, receiver, gain and day. It shows the features separate 46 signal types;
+  it does not show they survive a change of receiver.
+- Case 133 per protocol (readout): Byron-BY34 36/36, TFA-KlimaLogg 11/11, XC-0324 33/33, excelvan 32/32, hideki
+  24/24, interlogix 27/27, oil_watchman 41/41, m-bus 26/28, alecto_ws_1200 16/25, ambient_weather 0/22,
+  radiohead_ask 0/20.
+- `ambient_weather` folder 04 is recorded at 915 MHz and folder 05 at 433.92 MHz (file names); they are very
+  likely different products. `radiohead_ask` is a general-purpose library whose bit rate is set by the user.
+  That the two sessions differ in signal is inferred, not checked against decoded data.
+- Without those two classes case 133 is 246 of 257 (95.7%).
+
+### 22.5 Results: speed
+
+Spectra only (stage A style), 388 recordings, three frame lengths. "Matrix" columns use identical matrices.
+
+| Frame | Multiply-adds | NPU via server | NPU in-process, one recording per request | NPU in-process, 16 recordings per request | CPU matrix, 10 threads | CPU matrix, 1 thread | CPU FFT, 1 thread |
+|---|---|---|---|---|---|---|---|
+| 128-point | 28 billion | 1.12 s | 0.34 s | 0.21 s | 0.56 s | 3.18 s | 0.43 s |
+| 256-point | 56 billion | 0.96 s | 0.44 s | 0.27 s | 0.92 s | 5.86 s | 0.48 s |
+| 512-point | 113 billion | 1.14 s | 0.45 s | 0.30 s | 1.53 s | 9.90 s | 0.52 s |
+
+Whole identification, case 130 (776 recordings, 437 s of radio):
+
+| Path | Matrix work | Whole run | Times faster than real time |
+|---|---|---|---|
+| NPU via server | 1.39 s | 4.8 s | 91 |
+| NPU in-process (case 134) | 0.69 s | 3.5 s | 125 |
+| CPU, 10 threads | 1.04 s | 4.0 s | 109 |
+
+The rest of the whole run is reading files, burst finding and the closed-form fit, all on one CPU core in both
+paths.
+
+Processor time consumed for the spectra (client plus server, from `/proc/<pid>/stat`, 10 ms resolution), used
+as a stand-in for energy because the machine was on mains power and battery draw could not be read:
+
+| Frame | NPU via server | CPU matrix, 10 threads |
+|---|---|---|
+| 128-point | 0.42 CPU-s | 3.76 CPU-s |
+| 256-point | 0.40 CPU-s | 6.69 CPU-s |
+| 512-point | 0.47 CPU-s | 11.81 CPU-s |
+
+The DSP's own energy is not included; it is unknown.
+
+### 22.6 Where the NPU path spends its time
+
+In-process, 128-point, one recording per request, 430,354 frames: 0.34 s = pack to FP16 0.03 s + FastRPC calls
+0.23 s (0.05 s of it on the DSP) + unpack 0.08 s. Through the server the same work takes 1.12 s; about 60% of
+what the client sees is the Unix socket and the copies around it.
+
+Facts:
+
+- The accelerator itself needs 0.05-0.07 s for any of the three frame lengths: 0.4 to 2 trillion multiply-adds
+  per second. It is never the limit here.
+- Time through the server is proportional to bytes moved (about 1.0-1.1 s for 440 MB in and 440 MB out,
+  whatever the matrix size). That is why the server path loses at 128-point and wins at 512-point.
+- The fixed cost per FastRPC call (about 0.35 ms, section 13) dominated the in-process path. Two changes:
+  `MAX_BATCHES` in `session.rs` raised from 32 to 256 batches of 32 rows per call (the DSP library takes the
+  count as a parameter; no DSP change), and requests that fill the calls. 128-point: 539 calls -> 389 with the
+  larger cap -> 67 with 16 recordings per request; 0.56 s -> 0.34 s -> 0.21 s.
+- Largest difference between NPU and CPU spectra: 2.1-3.3% of the signal's RMS on the worst value (FP16
+  arithmetic). The CPU matrix result and the CPU FFT agree with each other.
+
+### 22.7 Conclusions
+
+- Accuracy: no difference between NPU and CPU.
+- Through the server, the NPU is slower than ten CPU threads on small transforms and faster on large ones, and
+  uses 9 to 25 times less processor time either way.
+- In-process with full calls, the NPU is 2.7 to 5.1 times faster than ten CPU threads on the same matrices and
+  1.7 to 2.0 times faster than a one-core FFT.
+- A CPU with an FFT on all cores would very likely beat the NPU for spectra alone (not measured). The NPU's
+  case is dense matrices that have no fast algorithm (libraries, templates, random features), and leaving the
+  CPU cores free.
+- The largest remaining cost is the server's socket. Shared memory between client and server, or linking the
+  session into the program, is the next step for any streaming use.
+
+### 22.8 Running it
+
+| Command | Does |
+|---|---|
+| `rust/target/release/usecases radioid` | Cases 130-133 through the server, NPU then CPU. `NPU_ONLY=1` skips the CPU, `NPU_DEBUG=1` prints per-device counts |
+| `./serve.sh stop; NPU_DIRECT=1 CLIENT=$PWD/rust/target/release/usecases ./run.sh 25; grep -E '^134\|^    \|' last-run.log; ./serve.sh start` | Case 134, NPU in-process. The server is stopped first: two DSP processes sharing the accelerator is untested |
+
+No DSP reset in this session. Highest temperature read 34.8 C.

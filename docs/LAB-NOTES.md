@@ -99,3 +99,23 @@ Engine facts learned:
 Server and tool changes made during the hour: NEON result unpacking; 8 MB shared output buffer; NEON weight
 packing; DSP method 4 (load a layer in one call); request 'A' (best match per row); unit tests; ids/live2.sh and
 ids/watch.sh; scripts/prep_real.py.
+
+## Radio identification against the CPU (2026-11-25, 07:08 start, 30 minutes allowed)
+
+| Time | Note |
+|---|---|
+| 07:08 | Start. DSP running on build 00078, server stopped. 164 recordings from the earlier hour; need labelled sets with many recordings per device |
+| 07:09 | Selected 46 devices / 776 recordings from rtl_433_tests, downloading (about 225 MB) |
+| 07:11 | First run: 96.9% nearest, 97.7% readout, NPU = CPU answers on 383/384. NPU slower. Timing included the CPU fit by mistake |
+| 07:13 | Cross-session set (11 protocols, 299 recordings): 79.4%. ambient_weather, radiohead_ask, alecto fail |
+| 07:15 | Spectra scaling with FFT reference and processor time. FFT on one core beats all matrix paths via the server |
+| 07:16 | Leave one session out: 82.3% |
+| 07:17 | Time breakdown: DSP 0.012 s of 0.20 s; socket and copies 0.125 s |
+| 07:18 | In-process session: 0.47 / 0.52 / 0.51 s for 128 / 256 / 512-point |
+| 07:19 | 16 recordings per request: 0.53 / 0.40 / 0.36 s; 128-point limited by the 32-batch cap |
+| 07:20 | Cap raised to 256: 0.21 / 0.27 / 0.30 s, 67 calls. Cases 1-3 still verified. Highest temperature 34.8 C |
+| 07:21 | Stopped experiments; writing up |
+
+Findings: same accuracy on NPU and CPU; NPU via the server is socket-bound; in-process with full calls it is
+2.7-5.1 times faster than ten CPU threads on the same matrices and about twice as fast as a one-core FFT; it
+uses 9-25 times less processor time. No DSP reset.

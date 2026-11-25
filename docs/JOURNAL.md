@@ -184,6 +184,38 @@ Things that did not work, kept on record:
 A light scan was run against this network's own gateway (101 TCP ports, connect scan) to test the live
 tool. No DSP resets during the hour. Highest temperature 53 °C, during CPU-side fitting.
 
+## 11. Radio identification against the CPU (2026-11-25)
+
+Asked for 30 minutes of radio identification compared with the CPU, on free samples from the internet. About 14
+minutes of experiments, the rest documentation. Full numbers: TECHNICAL.md section 22.
+
+In order:
+
+1. Chose rtl_433_tests again as the source (RadioML is still unavailable). First selection rule was too strict
+   (only files with `_250k` in the name, at most 1.5 MB): 8 devices. Relaxed it: 46 devices, 776 recordings.
+2. Wrote `radioid.rs` with one `Engine` trait so the same pipeline runs on the NPU and on the CPU. Features:
+   the 100 spectrum numbers from the earlier hour plus a new timing spectrum of bursts (envelope and frequency).
+3. First run: 96.9% / 97.7% on 46 devices, same on both. The NPU was slower (matrix work 2.94 s against
+   2.26 s). Mistake found: the timed section included the closed-form fit, which runs on the CPU in both
+   paths. Fixed to time only the matrix calls: 1.71 s against 1.06 s. Still slower.
+4. Suspected the 97% was inflated by same-session recordings. Built a second set split by recording folder:
+   79.4%. Three protocols failed completely. The file names show at least one of them (ambient_weather: 915 MHz
+   against 433.92 MHz) is two different products, so my assumption that numbered folders are the same protocol
+   was wrong for some families. Added leave-one-session-out: 82.3%, or 95.7% without the two mismatched classes.
+5. Measured the spectrum stage alone at 128, 256 and 512 points. The NPU through the server only overtakes ten
+   threads at 512 points. Added a plain FFT on one core for honesty: it beat every matrix path at that point.
+6. Tried to read battery draw for an energy comparison: on mains power and full, nothing to read. Used
+   processor time from `/proc` as a stand-in: the NPU path uses 9 to 25 times less.
+7. Broke down the NPU time: the accelerator needs about 6% of it; about 60% is the server socket.
+8. Ran the session in-process (server stopped): 0.47-0.52 s, faster than ten threads at every size.
+9. Call count was now the limit (539 calls of about 0.35 ms). Queued 16 recordings per request: little gain
+   at 128 points because of a cap of 32 batches per call in `session.rs`. Raised the cap to 256 (client side
+   only). Result 0.21-0.30 s: faster than the one-core FFT.
+10. Re-ran cases 1-3 and the unit tests after the cap change: verified, 4 of 4 tests pass.
+
+Not done: shared memory between client and server (the obvious next step), a multi-threaded FFT reference,
+decoding the mismatched sessions to confirm they are different protocols, DSP-side energy.
+
 ## DSP resets, in total
 
 | When | Cause |

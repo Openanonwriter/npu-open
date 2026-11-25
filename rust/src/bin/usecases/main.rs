@@ -1,11 +1,13 @@
 //! Demonstrations that run on the NPU through `npu-server`. No model here is trained by gradient
 //! descent: weights are random, analytic (DFT, templates), or fitted in closed form (PCA, least squares).
 //!
-//! usage: usecases [math|cyber|net|radio|all|<number>...|selftest|quit]
+//! usage: usecases [math|cyber|net|radio|all|real|live|radioid|<number>...|quit]
+//! NPU_DIRECT=1 (started through run.sh, server stopped) runs the in-process radio case 134 instead.
 mod cyber;
 mod math;
 mod net;
 mod radio;
+mod radioid;
 mod real;
 mod util;
 
@@ -31,11 +33,19 @@ fn cases() -> Vec<Case> {
     v.extend(real::CASES10);
     v.extend(real::CASES11);
     v.extend(real::CASES12);
+    v.extend(radioid::CASES);
     v
 }
 
 fn main() {
     let args: Vec<String> = std::env::args().skip(1).collect();
+    if std::env::var("NPU_DIRECT").is_ok() {
+        // In-process run without the server: start through run.sh (see radioid::direct).
+        if let Err(e) = radioid::direct() {
+            println!("134 | FAILED: {e}");
+        }
+        return;
+    }
     let mut c = match Client::connect() {
         Ok(c) => c,
         Err(e) => {

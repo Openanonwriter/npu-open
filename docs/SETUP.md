@@ -184,10 +184,14 @@ mkdir -p data/nslkdd data/dga data/phish data/tranco data/rtl433 data/live
 | Radio | recordings from rtl_433_tests into `data/rtl433/` with an `index.txt` of lines `OOK\|FSK 250k file.cu8` | read directly |
 | Ping | `ping -i 0.2 -D <gateway> > data/live/ping-gateway.txt` | `python3 -I scripts/prep_real.py ping data/live/ping-gateway.txt data/live/ping-gateway.f32` |
 | Wi-Fi | loop of `date +%s.%N; iw dev <if> station dump` into `data/live/wifi-station.txt` | `python3 -I scripts/prep_real.py wifi data/live/wifi-station.txt data/live/wifi.f32` |
+| Radio identification | `scripts/fetch-radioid.py` (389 MB from rtl_433_tests into `data/rtl433id/`) | read directly; `usecases radioid` |
 | Own traffic | `dumpcap -q -s 96 -i <if> -a duration:1500 -w ids/cap/real-baseline.pcapng` | `python3 -I ids/ids.py features ...` then `ids.py export ... ids/cap/real-baseline.f32` |
 
 - Treat downloads as untrusted: keep each in its own folder and read them with `python3 -I`.
 - `cargo test --release` in `rust/` runs the unit tests; they need no DSP.
+- Radio identification, NPU against CPU: `usecases radioid` (cases 130-133). The in-process run (case 134) needs
+  the server stopped: `./serve.sh stop`, `NPU_DIRECT=1 CLIENT=$PWD/rust/target/release/usecases ./run.sh 25`, read
+  `last-run.log`, `./serve.sh start`.
 - Live scoring with the real baseline: `./serve.sh start`, then `ids/live2.sh 30`.
 
 ## 9. When something fails
