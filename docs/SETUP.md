@@ -165,7 +165,32 @@ rust/target/release/usecases all
 - To use the accelerator from your own Rust program, depend on the `npu` crate by path and use
   `npu::proto::Client` (`define`, `linear`, `run`).
 
-## 8. When something fails
+## 8. Real data for the demonstrations
+
+`usecases real` needs data that is not in the repository. Sources and sizes are in TECHNICAL.md section 21.
+
+```bash
+mkdir -p data/nslkdd data/dga data/phish data/tranco data/rtl433 data/live
+```
+
+| Data | Get it | Convert |
+|---|---|---|
+| NSL-KDD | download `KDDTrain+.txt`, `KDDTest+.txt` into `data/nslkdd/` | `python3 -I scripts/prep_real.py nslkdd data/nslkdd` |
+| MNIST | `scripts/fetch-deps.sh --mnist` | `python3 -I scripts/prep_real.py mnist data/mnist data/mnist/test.f32` and `... data/mnist/train.f32 train 30000` |
+| Domains | `dga_domains_full.csv` into `data/dga/` | read directly |
+| Phishing feed | `feed.txt` into `data/phish/` | read directly |
+| Tranco | `top-1m.csv.zip` into `data/tranco/`, then `unzip` | read directly |
+| Man pages | `man -k . \| sort -u > data/live/whatis.txt` | read directly |
+| Radio | recordings from rtl_433_tests into `data/rtl433/` with an `index.txt` of lines `OOK\|FSK 250k file.cu8` | read directly |
+| Ping | `ping -i 0.2 -D <gateway> > data/live/ping-gateway.txt` | `python3 -I scripts/prep_real.py ping data/live/ping-gateway.txt data/live/ping-gateway.f32` |
+| Wi-Fi | loop of `date +%s.%N; iw dev <if> station dump` into `data/live/wifi-station.txt` | `python3 -I scripts/prep_real.py wifi data/live/wifi-station.txt data/live/wifi.f32` |
+| Own traffic | `dumpcap -q -s 96 -i <if> -a duration:1500 -w ids/cap/real-baseline.pcapng` | `python3 -I ids/ids.py features ...` then `ids.py export ... ids/cap/real-baseline.f32` |
+
+- Treat downloads as untrusted: keep each in its own folder and read them with `python3 -I`.
+- `cargo test --release` in `rust/` runs the unit tests; they need no DSP.
+- Live scoring with the real baseline: `./serve.sh start`, then `ids/live2.sh 30`.
+
+## 9. When something fails
 
 | Symptom | Cause |
 |---|---|

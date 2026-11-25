@@ -3,7 +3,7 @@
 //! DSP methods used: 0 open (acquire + power + describe layers), 1 load (one output group of one
 //! layer), 2 run (batches of 32 rows through every layer), 3 close.
 use crate::fastrpc::{invoke, remotectl_open, scalars, Arg, SharedBuf};
-use crate::tiles::{cell, f16_bits, f16_to_f32, pack_batch, pack_weights, tiles_for, TILE_BYTES, TILE_CELLS};
+use crate::tiles::{f16_bits, pack_batch, pack_weights, tiles_for, unpack_row, TILE_BYTES, TILE_CELLS};
 use std::time::Instant;
 
 /// One fully connected layer: `y = f(x W^T + b)`, with `w` row-major [n_out][n_in].
@@ -26,6 +26,8 @@ pub struct Stats {
     pub wall_us: u64,
     /// Microseconds spent converting inputs to FP16 tiles on the CPU.
     pub pack_us: u64,
+    /// Microseconds spent converting result tiles back to float32 on the CPU (not sent over the socket).
+    pub unpack_us: u64,
     pub calls: u32,
 }
 
@@ -50,7 +52,7 @@ pub struct Session {
 /// Bytes before the first output tile; 128 keeps the tiles aligned for the DSP's HVX copies.
 const HEADER: usize = 128;
 const IN_BYTES: usize = 4 << 20;
-const OUT_BYTES: usize = 2 << 20;
+const OUT_BYTES: usize = 8 << 20;
 const MAX_LAYERS: usize = 8;
 /// run flags: bit 0 one "deep" multiply per up-to-32 tiles, bit 1 return both sign passes, bit 2 HVX copies.
 const RUN_FLAGS: u32 = 7;
@@ -93,6 +95,7 @@ impl Session {
         self.close();
         let mut opened = false;
         // VTCM pages come in powers of four; ask for 4 MB, then 1 MB.
+        // 16 MB was tried on 2026-11-25 and refused (the DSP granted 4 MB); asking for it first only adds a failed attempt per model.
         for vt in [4u32 << 20, 1 << 20] {
             let mut words = [0u32; 28];
             words[0] = vt;
@@ -175,23 +178,28 @@ impl Session {
             }
             stats.dsp_us += st[1] as u64;
             let tiles = unsafe { std::slice::from_raw_parts(self.outb.ptr.add(HEADER) as *const u16, nb * per * TILE_CELLS) };
+            // NEON: one 128-byte row (two samples x 32 channels) at a time; see tiles::unpack_row
+            let t = Instant::now();
+            let groups = (m.n_out + 31) / 32;
             for b in 0..nb {
                 let first = (b0 + b) * 32;
-                for s in 0..(n - first).min(32) {
-                    for o in 0..m.n_out {
-                        let c = cell(s, o % 32);
-                        let mut v = tiles[(b * per + o / 32) * TILE_CELLS + c];
-                        if m.last_signed && v == 0 {
-                            // second convert pass holds max(-x, 0); exactly one pass is non-zero per cell
-                            let neg = tiles[(b * per + m.og + o / 32) * TILE_CELLS + c];
-                            if neg != 0 {
-                                v = neg | 0x8000;
-                            }
+                let rows = (n - first).min(32);
+                for j in 0..(rows + 1) / 2 {
+                    for g in 0..groups {
+                        let pos = unsafe { tiles.as_ptr().add((b * per + g) * TILE_CELLS + 64 * j) };
+                        let neg = if m.last_signed { unsafe { tiles.as_ptr().add((b * per + m.og + g) * TILE_CELLS + 64 * j) } } else { std::ptr::null() };
+                        let (mut ya, mut yb) = ([0f32; 32], [0f32; 32]);
+                        unsafe { unpack_row(pos, neg, &mut ya, &mut yb) };
+                        let width = (m.n_out - 32 * g).min(32);
+                        let at = (first + 2 * j) * m.n_out + 32 * g;
+                        y[at..at + width].copy_from_slice(&ya[..width]);
+                        if 2 * j + 1 < rows {
+                            y[at + m.n_out..at + m.n_out + width].copy_from_slice(&yb[..width]);
                         }
-                        y[(first + s) * m.n_out + o] = f16_to_f32(v);
                     }
                 }
             }
+            stats.unpack_us += t.elapsed().as_micros() as u64;
             b0 += nb;
         }
         Ok((y, stats))

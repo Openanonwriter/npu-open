@@ -207,3 +207,22 @@ pub fn quantile(v: &[f32], q: f32) -> f32 {
 pub fn argmax_rows(y: &[f32], width: usize) -> Vec<(usize, f32)> {
     y.chunks_exact(width).map(|r| r.iter().cloned().enumerate().fold((0, f32::MIN), |m, (i, v)| if v > m.1 { (i, v) } else { m })).collect()
 }
+
+/// Row file plus its one-byte-per-row label file (`.u8` beside the `.f32`), from `scripts/prep_real.py`.
+pub fn load_labelled(rel: &str) -> Result<(Vec<f32>, Vec<u8>, usize, usize), String> {
+    let (x, n, d) = load_rows(rel)?;
+    let p = std::path::PathBuf::from(std::env::var("NPU_OPEN").unwrap_or_else(|_| ".".into())).join(rel).with_extension("u8");
+    let y = std::fs::read(&p).map_err(|e| format!("{}: {e}", p.display()))?;
+    Ok((x, y, n, d))
+}
+
+pub fn data_path(rel: &str) -> std::path::PathBuf {
+    std::path::PathBuf::from(std::env::var("NPU_OPEN").unwrap_or_else(|_| ".".into())).join(rel)
+}
+
+/// Rows of `x` whose label satisfies `keep`, at most `max` of them, evenly spaced.
+pub fn select(x: &[f32], y: &[u8], d: usize, max: usize, keep: impl Fn(u8) -> bool) -> Vec<f32> {
+    let idx: Vec<usize> = (0..y.len()).filter(|&i| keep(y[i])).collect();
+    let step = (idx.len() / max.max(1)).max(1);
+    idx.iter().step_by(step).take(max).flat_map(|&i| x[i * d..(i + 1) * d].to_vec()).collect()
+}

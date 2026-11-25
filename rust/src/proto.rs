@@ -91,7 +91,7 @@ impl Client {
         self.s.write_all(&(rows as u32).to_le_bytes()).map_err(io)?;
         write_f32s(&mut self.s, x).map_err(io)?;
         self.status()?;
-        let st = Stats { dsp_us: read_u64(&mut self.s).map_err(io)?, wall_us: read_u64(&mut self.s).map_err(io)?, pack_us: read_u64(&mut self.s).map_err(io)?, calls: read_u32(&mut self.s).map_err(io)? };
+        let st = Stats { dsp_us: read_u64(&mut self.s).map_err(io)?, wall_us: read_u64(&mut self.s).map_err(io)?, pack_us: read_u64(&mut self.s).map_err(io)?, unpack_us: 0, calls: read_u32(&mut self.s).map_err(io)? };
         let n_out = read_u32(&mut self.s).map_err(io)? as usize;
         Ok((read_f32s(&mut self.s, rows * n_out).map_err(io)?, st))
     }

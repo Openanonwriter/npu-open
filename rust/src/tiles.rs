@@ -109,3 +109,114 @@ pub fn pack_weights(w: &[f32], n_out: usize, n_in: usize, g: usize) -> Vec<u16> 
 pub fn cell(s: usize, c: usize) -> usize {
     64 * (s / 2) + 2 * c + s % 2
 }
+
+/// Converts one 128-byte output row (two samples x 32 channels, interleaved) to float32:
+/// `a` gets the 32 channels of the even sample, `b` those of the odd sample.
+/// With `neg` (the second convert pass, holding max(-x, 0)), cells that are zero in `pos` take the
+/// negated value from `neg`; exactly one of the two is non-zero per cell.
+///
+/// # Safety
+/// `pos` (and `neg` if not null) must point to 64 readable u16 values.
+pub unsafe fn unpack_row(pos: *const u16, neg: *const u16, a: &mut [f32; 32], b: &mut [f32; 32]) {
+    for c in (0..32).step_by(4) {
+        if neg.is_null() {
+            asm!(
+                "ldr q0, [{p}]",
+                "uzp1 v5.8h, v0.8h, v0.8h", "uzp2 v6.8h, v0.8h, v0.8h",
+                "fcvtl v5.4s, v5.4h", "fcvtl v6.4s, v6.4h",
+                "str q5, [{a}]", "str q6, [{b}]",
+                p = in(reg) pos.add(2 * c), a = in(reg) a.as_mut_ptr().add(c), b = in(reg) b.as_mut_ptr().add(c),
+                out("v0") _, out("v5") _, out("v6") _, options(nostack),
+            );
+        } else {
+            asm!(
+                "ldr q0, [{p}]", "ldr q1, [{n}]",
+                "cmeq v2.8h, v0.8h, #0",          // where the first pass is zero
+                "cmtst v3.8h, v1.8h, v1.8h",      // where the second pass is non-zero
+                "movi v4.8h, #0x80, lsl #8",      // sign bit
+                "orr v1.16b, v1.16b, v4.16b", "and v1.16b, v1.16b, v3.16b",
+                "bsl v2.16b, v1.16b, v0.16b",     // zero in pass one: take the negated pass two
+                "uzp1 v5.8h, v2.8h, v2.8h", "uzp2 v6.8h, v2.8h, v2.8h",
+                "fcvtl v5.4s, v5.4h", "fcvtl v6.4s, v6.4h",
+                "str q5, [{a}]", "str q6, [{b}]",
+                p = in(reg) pos.add(2 * c), n = in(reg) neg.add(2 * c), a = in(reg) a.as_mut_ptr().add(c), b = in(reg) b.as_mut_ptr().add(c),
+                out("v0") _, out("v1") _, out("v2") _, out("v3") _, out("v4") _, out("v5") _, out("v6") _, options(nostack),
+            );
+        }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn f16_conversions_agree_and_round_trip() {
+        for &v in &[0.0f32, 1.0, -1.0, 0.5, 16.0, 65504.0, -65504.0, 1e-4, 3.14159, -2.71828, 6.1e-5, 5.96e-8] {
+            let h = f16_bits(v);
+            let back = f16_to_f32(h);
+            assert_eq!(f16_bits(back), h, "round trip of {v}");
+            assert!((back - v).abs() <= v.abs() * 1e-3 + 1e-7, "{v} -> {back}");
+        }
+        assert_eq!(f16_bits(1.0), 0x3c00);
+        assert_eq!(f16_bits(16.0), 0x4c00);
+        assert_eq!(f16_bits(-1.0), 0xbc00);
+        assert_eq!(f16_to_f32(0x0001), 5.960_464_5e-8); // smallest subnormal
+        assert!(f16_to_f32(0x7c00).is_infinite());
+    }
+
+    #[test]
+    fn pack_matches_the_cell_formula_for_padded_shapes() {
+        for &(rows, feat) in &[(32usize, 784usize), (32, 64), (32, 10), (16, 784), (7, 100), (1, 33)] {
+            let x: Vec<f32> = (0..rows * feat).map(|i| ((i * 37 % 201) as f32 - 100.0) / 7.0).collect();
+            let nk = tiles_for(feat);
+            let mut t = vec![0xffffu16; nk * TILE_CELLS];
+            unsafe { pack_batch(t.as_mut_ptr(), &x, rows, feat) };
+            for k in 0..nk {
+                for p in 0..TILE_CELLS {
+                    let (s, i) = (2 * (p / 64) + p % 2, 32 * k + (p % 64) / 2);
+                    let want = if s < rows && i < feat { f16_bits(x[s * feat + i]) } else { 0 };
+                    assert_eq!(t[k * TILE_CELLS + p], want, "rows {rows} feat {feat} tile {k} cell {p}");
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn unpack_splits_samples_and_merges_sign_passes() {
+        let vals: Vec<f32> = (0..64).map(|i| if i % 5 == 0 { 0.0 } else { (i as f32 - 30.0) * 0.75 }).collect();
+        let (mut pos, mut neg) = ([0u16; 64], [0u16; 64]);
+        for (i, &v) in vals.iter().enumerate() {
+            pos[i] = f16_bits(v.max(0.0));
+            neg[i] = f16_bits((-v).max(0.0));
+        }
+        let (mut a, mut b) = ([0f32; 32], [0f32; 32]);
+        unsafe { unpack_row(pos.as_ptr(), neg.as_ptr(), &mut a, &mut b) };
+        for c in 0..32 {
+            assert_eq!(a[c], vals[2 * c], "even sample channel {c}");
+            assert_eq!(b[c], vals[2 * c + 1], "odd sample channel {c}");
+        }
+        unsafe { unpack_row(pos.as_ptr(), std::ptr::null(), &mut a, &mut b) };
+        for c in 0..32 {
+            assert_eq!(a[c], vals[2 * c].max(0.0));
+            assert_eq!(b[c], vals[2 * c + 1].max(0.0));
+        }
+    }
+
+    #[test]
+    fn weights_use_the_transposed_roles() {
+        let (n_out, n_in) = (40usize, 70usize);
+        let w: Vec<f32> = (0..n_out * n_in).map(|i| i as f32 * 0.01).collect();
+        for g in 0..tiles_for(n_out) {
+            let t = pack_weights(&w, n_out, n_in, g);
+            for k in 0..tiles_for(n_in) {
+                for q in 0..TILE_CELLS {
+                    let (i, o) = (32 * k + 2 * (q / 64) + q % 2, 32 * g + (q % 64) / 2);
+                    let want = if o < n_out && i < n_in { f16_bits(w[o * n_in + i]) } else { 0 };
+                    assert_eq!(t[k * TILE_CELLS + q], want);
+                }
+            }
+        }
+        assert_eq!(cell(5, 7), 64 * 2 + 14 + 1);
+    }
+}

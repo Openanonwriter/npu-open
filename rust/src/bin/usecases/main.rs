@@ -6,6 +6,7 @@ mod cyber;
 mod math;
 mod net;
 mod radio;
+mod real;
 mod util;
 
 use npu::proto::Client;
@@ -18,6 +19,16 @@ fn cases() -> Vec<Case> {
     v.extend(cyber::CASES);
     v.extend(net::CASES);
     v.extend(radio::CASES);
+    v.extend(real::CASES);
+    v.extend(real::CASES2);
+    v.extend(real::CASES3);
+    v.extend(real::CASES4);
+    v.extend(real::CASES5);
+    v.extend(real::CASES6);
+    v.extend(real::CASES7);
+    v.extend(real::CASES8);
+    v.extend(real::CASES9);
+    v.extend(real::CASES10);
     v
 }
 
@@ -34,7 +45,7 @@ fn main() {
         c.quit();
         return;
     }
-    let want = |id: u32, area: &str| args.is_empty() || args.iter().any(|a| a == "all" || a == area || a.parse::<u32>() == Ok(id));
+    let want = |id: u32, area: &str| (args.is_empty() && area != "real" && area != "live") || args.iter().any(|a| (a == "all" && area != "real" && area != "live") || a == area || a.parse::<u32>() == Ok(id));
     let mut failed = 0;
     for (id, area, f) in cases() {
         if want(id, area) {

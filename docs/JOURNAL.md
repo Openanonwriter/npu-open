@@ -141,6 +141,41 @@ asking. It was metadata, not code, but closer to the rules than it should have b
 
 - No DSP resets. Highest temperature 40 °C.
 
+## 10. One hour on real data (2026-11-25)
+
+The owner set a one-hour limit: test everything on real data, improve it any way possible, take notes,
+stop at the end and record the findings. Timestamped notes: [LAB-NOTES.md](LAB-NOTES.md). Reference
+form: TECHNICAL.md section 21.
+
+| When | What | Outcome |
+|---|---|---|
+| 0 min | Started a 25-minute header-only capture, pings and Wi-Fi sampling in the background; downloaded NSL-KDD, a labelled generated-domain set, a phishing feed and the Tranco list | All arrived. RadioML's official link is dead |
+| 2 min | First real-data run of seven cases | Man-page search and NSL-KDD scoring good; phishing lookalikes poor (7.3% caught, 3.44% false alarms) |
+| 4 min | Closed-form two-layer models with the feature layer on the accelerator | MNIST 94.14%; phishing hosts 69.9% at 1% false alarms; no gain for generated domains or NSL-KDD |
+| 6 min | Found real radio data: rtl_433's test corpus; derived OOK/FSK labels from the decoder source | 164 usable recordings; rule 87.2%, readout 86.6% |
+| 7 min | Nearest neighbour over 30,000 images by paging; NSL-KDD fusion; richer domain inputs | 94.2%; 84.4% (from 78.8%); 87.8% |
+| 9 min | Throughput check after an implausible figure | Confirmed: 2.3 trillion multiply-adds per second on the DSP clock, verified output |
+| 10 min | NEON unpacking and an 8 MB output buffer in the server | End to end 90 to 213 billion per second; all 23 checkable original cases still verify |
+| 11 min | Own-traffic baseline from the capture so far | 1.1% false alarms on unseen real traffic (was about 24%) |
+| 12 min | `ids/live2.sh` on the improved method | Scan of the gateway flagged with the reason named; quiet capture 0 alarms |
+| 13 min | Unit tests for the Rust conversion code | 4 pass |
+| 13 min | Matched filter on real recordings | Carrier form misleading (score 1.00); envelope-pattern form finds repeats for 16 of 24 devices |
+| 14 min | First-packet signatures on own traffic | Not evaluable: at most 5 new connections per server |
+| 16 min | Wider MNIST model; larger VTCM request | 2,048 features 95.56%; 4,096 do not fit; 16 MB of VTCM refused |
+| 25 min | Capture finished; full real suite rerun | 23 results in TECHNICAL.md section 21 |
+
+Things that did not work, kept on record:
+
+- Lookalike matching against a live phishing feed (wrong tool for free-hosting subdomains).
+- A nonlinear layer for generated domains (85.4%, below the linear 86.9%); word-built families stay at
+  6-17% however the inputs are enriched.
+- More capacity on NSL-KDD (77.4% with 1,024 features on 60,000 rows, below 78.8% with 512 on 24,000).
+- The first matched-filter design, which matched carrier frequency instead of packets.
+- RadioML could not be downloaded.
+
+A light scan was run against this network's own gateway (101 TCP ports, connect scan) to test the live
+tool. No DSP resets during the hour. Highest temperature 53 °C, during CPU-side fitting.
+
 ## DSP resets, in total
 
 | When | Cause |

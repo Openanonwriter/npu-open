@@ -49,3 +49,5 @@ __pycache__/
 /server.pid
 /usecases.out
 *.f32
+/usecases-real.out
+/.hour-start

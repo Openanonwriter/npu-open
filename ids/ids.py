@@ -5,6 +5,7 @@
   ids.py train BENIGN.npz ATTACK.npz  train an autoencoder on benign flows (numpy, CPU); write model.bin, meta.json
   ids.py eval OUTPUTS.bin             score the accelerator's reconstructions and report detection quality
   ids.py report FLOWS.npz MODEL OUTPUTS.bin  list the most anomalous flows of a capture scored with the trained model
+  ids.py firstpackets CAPTURE OUT.f32 first eight packets of each TCP connection, labelled per server endpoint
   ids.py export FLOWS.npz OUT.f32     raw feature rows for the Rust demonstrations (rust/src/bin/usecases)
 
 Only packet headers are used: addresses, ports, sizes, times and TCP flags. Addresses never enter the features."""
@@ -154,10 +155,41 @@ def cmd_eval(outputs):
 
 def cmd_export(flows, out):
     """Write a capture's raw flow features as u32 rows, u32 width, float32 data (for the Rust demonstrations)."""
-    X = np.load(flows)['X']
+    d = np.load(flows)
+    X = d['X']
     with open(out, 'wb') as f:
         f.write(struct.pack('<2I', *X.shape)); f.write(X.astype('<f4').tobytes())
+    with open(out[:-4] + '.txt', 'w') as f:      # one description per row, for reports
+        f.write('\n'.join(str(m) for m in d['meta']) + '\n')
     print(f'{len(X)} flow records -> {out}')
+
+def cmd_firstpackets(cap, out):
+    """First eight packets of every TCP connection: signed sizes (minus = from the server) and gaps.
+    Rows are labelled with a number per server endpoint that has at least six connections; the
+    endpoint addresses themselves are not written."""
+    flows = {}
+    for t, src, dst, proto, sp, dp, size, flags in read_packets(cap):
+        if proto != 6: continue
+        a, b = (src, sp), (dst, dp)
+        key = (a, b) if a <= b else (b, a)
+        f = flows.get(key)
+        if f is None:
+            if not (flags & 0x12 == 0x02): continue          # start at the SYN so client and server are known
+            f = flows[key] = dict(client=a, server=b, pk=[])
+        if len(f['pk']) < 8: f['pk'].append((t, size if (src, sp) == f['client'] else -size))
+    by_server = defaultdict(list)
+    for f in flows.values():
+        if len(f['pk']) == 8: by_server[f['server']].append(f['pk'])
+    X, y = [], []
+    for label, (server, lst) in enumerate(sorted((kv for kv in by_server.items() if len(kv[1]) >= 6), key=lambda kv: -len(kv[1]))[:32]):
+        for pk in sorted(lst):
+            t0 = pk[0][0]
+            X.append([s / 1500 for _, s in pk] + [math.log1p(1000 * (t - t0)) / 5 for t, _ in pk]); y.append(label)
+    X = np.array(X, np.float32).reshape(-1, 16)
+    with open(out, 'wb') as f:
+        f.write(struct.pack('<2I', *X.shape)); f.write(X.astype('<f4').tobytes())
+    open(out[:-4] + '.u8', 'wb').write(np.array(y, np.uint8).tobytes())
+    print(f'{len(X)} connections to {len(set(y))} server endpoints -> {out}')
 
 def cmd_prepare(flows, out):
     """Normalise a capture's flow records with the trained model's statistics and write a model file to score them."""
@@ -175,6 +207,6 @@ def cmd_report(flows, model, outputs):
         print(f"  {s[i]:8.2f} {'ALARM' if s[i] > thr else '     '} {d['meta'][i]}   (most unusual: {', '.join(NAMES[j] for j in worst)})")
 
 if __name__ == '__main__':
-    cmds = dict(features=cmd_features, train=cmd_train, eval=cmd_eval, prepare=cmd_prepare, report=cmd_report, export=cmd_export)
+    cmds = dict(features=cmd_features, train=cmd_train, eval=cmd_eval, prepare=cmd_prepare, report=cmd_report, export=cmd_export, firstpackets=cmd_firstpackets)
     if len(sys.argv) < 2 or sys.argv[1] not in cmds: sys.exit(__doc__)
     cmds[sys.argv[1]](*sys.argv[2:])
