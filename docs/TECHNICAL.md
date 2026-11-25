@@ -501,6 +501,8 @@ demonstrations. Rust 1.100 from Fedora; `cargo build --release` needs no network
 | `rust/src/bin/server.rs` | `server`: accepts one client at a time on `npu.sock` |
 | `rust/src/bin/usecases/` | `usecases`: the 25 demonstrations (section 20) |
 
+DSP library methods (`npu/npu_skel.c`): 0 open, 1 load one group, 2 run, 3 close, 4 load many groups.
+
 Why a server: the FastRPC file descriptor only exists inside a process started by
 `hexagonrpcd -p`, and the accelerator session is tied to it. The server holds both and lets any
 number of short-lived programs use the accelerator through a socket.
@@ -556,6 +558,8 @@ All confirmed by the server working, unless marked.
 | Batches per call | up to 32, limited by the shared buffer sizes |
 | Layers | up to 8; each ReLU or signed; a signed layer that is not last is merged on the DSP (slow path) |
 | Redefining the model | close (method 3), open again, load weights; the shared buffers are reused |
+| Loading weights | DSP method 4: all output groups of a layer in one call (as many as fit the 4 MB shared input buffer), copied to VTCM with HVX. A 2,000 x 784 layer loads in 5.6 ms (0.5 close and open, 3.9 packing on the CPU, 0.9 the call). Before, one call per group: 63 calls, 25-35 ms |
+| Timing output | start the server with `NPU_SERVER_TIMING=1` to log each model load's breakdown in `server.log` |
 | Power | MIPS request 2000 and latency hint 100 µs at every open |
 
 ### Socket protocol (`npu.sock`, little-endian)
@@ -707,30 +711,30 @@ Final run, 2026-11-25, with the full 25-minute capture (62 thousand packets, 1,8
 samples and 2,798 Wi-Fi samples:
 
 ```
-103 | MNIST nearest centroid       | 5000 real digit images, 10 class means | 80.4% correct with no trained model                  |    0.20 us/row NPU,    0.86 us/row total | not checked
-104 | Man-page search              | 6 queries against 20646 real entries | top hits: dir, gunzip, chmod, df, curl, xzegrep      |   28.17 us/row NPU,  238.67 us/row total | not checked
-108 | Intrusion scoring, NSL-KDD   | 22544 real test connections, PCA   | attacks flagged 65.1% (DoS 80, probe 60, R2L 32, U2R 63), false alarms 9.8% |    0.05 us/row NPU,    0.39 us/row total | not checked
-110 | Lookalikes, live phishing feed | 300 phishing hosts, 20000 popular sites | 7.3% of phishing hosts flagged ("github" ~ github); 3.44% of popular sites |    0.07 us/row NPU,    0.46 us/row total | not checked
-112 | Generated domains, real set  | 40000 real names, 732 features     | 86.9% correct; hardest families: nymaim 6%, suppobox 11%, gozi 55% |    0.17 us/row NPU,    0.84 us/row total | not checked
-114 | Behaviour baseline, NSL-KDD  | 22544 real test connections, whitened | attacks flagged 78.0% (DoS 89, probe 89, R2L 40, U2R 75), false alarms 4.4% |    0.05 us/row NPU,    0.28 us/row total | not checked
-126 | Intrusion classifier, NSL-KDD | 22544 real test connections, 2 layers | 78.8% correct on KDDTest+ (68.5% of attacks caught, 7.5% false alarms) |    0.09 us/row NPU,    0.26 us/row total | not checked
-203 | MNIST, random features       | 10000 real test digits, 784-1024-10 | 94.14% correct, fitted in closed form (no gradient descent) |    0.37 us/row NPU,    0.94 us/row total | not checked
-212 | Generated domains, 2 layers  | 40000 real names, 732-1024-1       | 85.4% correct; hardest families: nymaim 12%, suppobox 16%, gozi 55% |    0.33 us/row NPU,    0.90 us/row total | not checked
-226 | NSL-KDD, 1024 random features | 22544 real test connections        | 77.4% correct on KDDTest+ (65.8% of attacks caught, 7.2% false alarms) |    0.16 us/row NPU,    0.55 us/row total | not checked
-227 | Phishing host scoring        | 143 unseen phishing hosts, 10000 popular sites | 69.9% of phishing hosts caught at 1% false alarms    |    0.11 us/row NPU,    0.53 us/row total | not checked
-120 | OOK or FSK, real recordings  | 164 off-air recordings, 146253 spectra | rule: 143 of 164 right; fitted readout on unseen half: FSK 17/23, OOK 54/59 |    0.14 us/row NPU,    0.75 us/row total | not checked
-121 | Occupancy, real recordings   | 164 off-air recordings, 146253 spectra | signal found in 142; median 16 bursts, 6 kHz occupied |    0.15 us/row NPU,    0.72 us/row total | not checked
-204 | Nearest neighbour, MNIST     | 2000 digits against 30000 real images | 94.2% correct; 47 billion multiply-adds in total     |   11.54 us/row NPU,   26.40 us/row total | not checked
-228 | NSL-KDD, classifier or distance | 22544 real test connections        | 84.4% correct; attacks 79.1% (DoS 95, probe 90, R2L 28, U2R 79), false alarms 8.6% |    0.07 us/row NPU,    0.26 us/row total | not checked
-312 | Generated domains, richer inputs | 60000 real names, 1764 features    | 88.7% correct, 7.3% false alarms; hardest: nymaim 6%, suppobox 17%, gozi 65% |    0.40 us/row NPU,    1.21 us/row total | not checked
-217 | Wi-Fi bitrate, real link     | 1120 real samples of this link     | RMS error 151 Mbit/s; repeat-last 168; the rate changed in 130 samples |    0.03 us/row NPU,    0.37 us/row total | not checked
-218 | Latency forecast, real pings | 2800 real round-trip times, 16 taps | RMS error 0.452 (log ms); repeat-last 0.616, long-run mean 0.621 |    0.02 us/row NPU,    0.24 us/row total | not checked
-301 | Throughput check             | 2048x800 times 800x2048            | 2322 billion multiply-adds/s on the DSP clock, 227.2 billion/s end to end |    0.71 us/row NPU,    1.48 us/row total | verified
-208 | Intrusion scoring, own traffic | 1805 real flow records + 6835 scan records | 1.1% false alarms on unseen real traffic, 100.0% of scan flows flagged |    0.02 us/row NPU,    0.23 us/row total | not checked
+103 | MNIST nearest centroid       | 5000 real digit images, 10 class means | 80.4% correct with no trained model                  |    0.20 us/row NPU,    0.73 us/row total | not checked
+104 | Man-page search              | 6 queries against 20646 real entries | top hits: dir, gunzip, chmod, df, curl, xzegrep      |   27.17 us/row NPU,  223.83 us/row total | not checked
+108 | Intrusion scoring, NSL-KDD   | 22544 real test connections, PCA   | attacks flagged 65.1% (DoS 80, probe 60, R2L 32, U2R 63), false alarms 9.8% |    0.05 us/row NPU,    0.25 us/row total | not checked
+110 | Lookalikes, live phishing feed | 300 phishing hosts, 20000 popular sites | 7.3% of phishing hosts flagged ("github" ~ github); 3.44% of popular sites |    0.07 us/row NPU,    0.30 us/row total | not checked
+112 | Generated domains, real set  | 40000 real names, 732 features     | 86.9% correct; hardest families: nymaim 6%, suppobox 11%, gozi 55% |    0.16 us/row NPU,    0.67 us/row total | not checked
+114 | Behaviour baseline, NSL-KDD  | 22544 real test connections, whitened | attacks flagged 78.0% (DoS 89, probe 89, R2L 40, U2R 75), false alarms 4.4% |    0.05 us/row NPU,    0.26 us/row total | not checked
+126 | Intrusion classifier, NSL-KDD | 22544 real test connections, 2 layers | 78.8% correct on KDDTest+ (68.5% of attacks caught, 7.5% false alarms) |    0.09 us/row NPU,    0.29 us/row total | not checked
+203 | MNIST, random features       | 10000 real test digits, 784-1024-10 | 94.14% correct, fitted in closed form (no gradient descent) |    0.38 us/row NPU,    0.93 us/row total | not checked
+212 | Generated domains, 2 layers  | 40000 real names, 732-1024-1       | 85.4% correct; hardest families: nymaim 12%, suppobox 16%, gozi 55% |    0.33 us/row NPU,    0.85 us/row total | not checked
+226 | NSL-KDD, 1024 random features | 22544 real test connections        | 77.4% correct on KDDTest+ (65.8% of attacks caught, 7.2% false alarms) |    0.14 us/row NPU,    0.33 us/row total | not checked
+227 | Phishing host scoring        | 143 unseen phishing hosts, 10000 popular sites | 69.9% of phishing hosts caught at 1% false alarms    |    0.11 us/row NPU,    0.47 us/row total | not checked
+120 | OOK or FSK, real recordings  | 164 off-air recordings, 146253 spectra | rule: 143 of 164 right; fitted readout on unseen half: FSK 17/23, OOK 54/59 |    0.13 us/row NPU,    0.65 us/row total | not checked
+121 | Occupancy, real recordings   | 164 off-air recordings, 146253 spectra | signal found in 142; median 16 bursts, 6 kHz occupied |    0.14 us/row NPU,    0.74 us/row total | not checked
+204 | Nearest neighbour, MNIST     | 2000 digits against 30000 real images | 94.2% correct; 47 billion multiply-adds in total     |    9.64 us/row NPU,   20.94 us/row total | not checked
+228 | NSL-KDD, classifier or distance | 22544 real test connections        | 84.4% correct; attacks 79.1% (DoS 95, probe 90, R2L 28, U2R 79), false alarms 8.6% |    0.07 us/row NPU,    0.27 us/row total | not checked
+312 | Generated domains, richer inputs | 60000 real names, 1764 features    | 88.7% correct, 7.3% false alarms; hardest: nymaim 6%, suppobox 17%, gozi 65% |    0.42 us/row NPU,    1.37 us/row total | not checked
+217 | Wi-Fi bitrate, real link     | 1120 real samples of this link     | RMS error 151 Mbit/s; repeat-last 168; the rate changed in 130 samples |    0.02 us/row NPU,    0.56 us/row total | not checked
+218 | Latency forecast, real pings | 2800 real round-trip times, 16 taps | RMS error 0.452 (log ms); repeat-last 0.616, long-run mean 0.621 |    0.02 us/row NPU,    0.35 us/row total | not checked
+301 | Throughput check             | 2048x800 times 800x2048            | 2351 billion multiply-adds/s on the DSP clock, 199.7 billion/s end to end |    0.70 us/row NPU,    1.50 us/row total | verified
+208 | Intrusion scoring, own traffic | 1805 real flow records + 6835 scan records | 1.1% false alarms on unseen real traffic, 100.0% of scan flows flagged |    0.02 us/row NPU,    0.24 us/row total | not checked
 215 | Clusters, own traffic        | 1805 real flow records, 6 centres  | sizes: 634 (34% udp, 19% dns, 64% https); 326 (15% udp, 0% dns, 100% https); 338 (100% udp, 0% dns, 0% https); 106 (15% udp, 0% dns, 100% https); 124 (0% ud
-223 | Matched filter, carrier      | 24560 windows of 24 joined real excerpts | 21 of 24: best other match is in the same device's excerpt (median score 1.00; mostly matches carrier frequency) |    0.12 us/row NPU,    0.53 us/row 
-323 | Matched filter, packet pattern | 24320 envelope windows, 24 real devices | 16 of 24: best other match is in the same device's excerpt (median score 0.87, chance is 1 in 24) |    0.06 us/row NPU,    0.32 us/row total | not ch
-216 | First packets, own connections | not run                            | too few new TCP connections per server in the capture (at most 5 to one endpoint in 25 minutes)
+223 | Matched filter, carrier      | 24560 windows of 24 joined real excerpts | 21 of 24: best other match is in the same device's excerpt (median score 1.00; mostly matches carrier frequency) |    0.12 us/row NPU,    0.56 us/row 
+323 | Matched filter, packet pattern | 24320 envelope windows, 24 real devices | 16 of 24: best other match is in the same device's excerpt (median score 0.87, chance is 1 in 24) |    0.06 us/row NPU,    0.31 us/row total | not ch
+216 | First packets, own connections | not run                            | too few new TCP connections per server in the capture (needs 6 or more to one endpoint)
 ```
 
 Case 203 with 2,048 random features (`NPU_FEATS=2048`) gives 95.56%; 4,096 do not fit in VTCM.
@@ -741,7 +745,8 @@ Case 203 with 2,048 random features (`NPU_FEATS=2048`) gives 95.56%; 4,096 do no
 |---|---|
 | Accelerator throughput | **2.3 trillion FP16 multiply-adds per second** on the DSP clock: 2048x800 times 800x2048 (3.36 billion) in 1.43 ms, output verified. One 128-byte weight vector serves 2 input channels x 32 outputs x 32 samples = 2,048 multiply-adds, so this is one vector per cycle at about 1.1 GHz |
 | End to end | The same job runs at 213 billion per second through the socket (90 billion before the NEON unpacking and the larger output buffer). The copies between client, server and shared buffers are now 10 times the accelerator's time |
-| Tables larger than VTCM | Paging works: 30,000 x 784 image table in 15 blocks, 20,646 x 256 text table in 5 blocks. Reloading weights per block dominates (1.8 s for the image search, of which 23 ms is DSP run time) |
+| Tables larger than VTCM | Paging works: 30,000 x 784 image table in 15 blocks, 20,646 x 256 text table in 5 blocks. Loading weights per block dominated (1.3 s for the image search, of which 23 ms is DSP run time) until loading became one call per layer: now 0.65 s, and the text search 0.05 s |
+| A FastRPC call costs about 0.35 ms | Whatever it carries. 63 per-group load calls cost 20-29 ms; packing the weights was only 4.7 ms, so vectorising the packing alone changed nothing |
 | Whitening beats PCA for anomalies | NSL-KDD: 78.0% of attacks at 4.4% false alarms against 65.1% at 9.8% |
 | Fusion helps on NSL-KDD | Classifier OR whitened distance: 84.4% correct, up from 78.8%. More random features alone do not help (77.4% with 1,024 on 60,000 rows): KDDTest+ has attack types missing from training. R2L stays at 28-40% |
 | A real baseline fixes the false alarms | With this machine's own traffic as baseline (1,805 flow records), 1.1% false alarms on unseen real traffic and every scan flagged; a quiet 20 s live capture gave 0 alarms in 19 records, where the section 18 tool gave 6 in 25 |

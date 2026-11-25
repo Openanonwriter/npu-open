@@ -92,7 +92,9 @@ impl Session {
                 return Err(format!("layer {i}: input width {} does not follow layer {} output width {}", l.n_in, i - 1, layers[i - 1].n_out));
             }
         }
+        let t_all = Instant::now();
         self.close();
+        let t_open = Instant::now();
         let mut opened = false;
         // VTCM pages come in powers of four; ask for 4 MB, then 1 MB.
         // 16 MB was tried on 2026-11-25 and refused (the DSP granted 4 MB); asking for it first only adds a failed attempt per model.
@@ -118,20 +120,37 @@ impl Session {
         if !opened {
             return Err("the accelerator session could not be opened: the model may not fit in VTCM, or the DSP is not ready".into());
         }
+        let open_us = t_open.elapsed().as_micros();
+        let (mut pack_us, mut load_us, mut groups) = (0u128, 0u128, 0u32);
         for (li, l) in layers.iter().enumerate() {
-            for g in 0..tiles_for(l.n_out) {
-                let wt = pack_weights(&l.w, l.n_out, l.n_in, g);
-                let mut bias = [0u16; 32];
-                for o in 0..32 {
-                    if 32 * g + o < l.n_out {
-                        bias[o] = f16_bits(l.b[32 * g + o]);
+            let (nk, ng) = (tiles_for(l.n_in), tiles_for(l.n_out));
+            // DSP method 4 takes many groups per call, with the weights in the shared input buffer (no kernel copy).
+            // A call costs about 0.35 ms whatever it carries, so this replaces one call per group.
+            let per_call = (IN_BYTES / (nk * TILE_BYTES)).max(1);
+            let mut g0 = 0;
+            while g0 < ng {
+                let n = (ng - g0).min(per_call);
+                let t = Instant::now();
+                let mut bias = vec![0u16; n * 32];
+                for j in 0..n {
+                    let wt = pack_weights(&l.w, l.n_out, l.n_in, g0 + j);
+                    unsafe { std::ptr::copy_nonoverlapping(wt.as_ptr(), (self.inb.ptr as *mut u16).add(j * nk * TILE_CELLS), wt.len()) };
+                    for o in 0..32 {
+                        if 32 * (g0 + j) + o < l.n_out {
+                            bias[j * 32 + o] = f16_bits(l.b[32 * (g0 + j) + o]);
+                        }
                     }
                 }
-                let words = [li as u32, g as u32];
-                let ret = invoke(self.fd, self.handle, scalars(1, 3, 0), &mut [Arg::input(&words), Arg::input(&wt), Arg::input(&bias)]).map_err(|e| format!("load: {e}"))?;
+                pack_us += t.elapsed().as_micros();
+                groups += 1;
+                let t = Instant::now();
+                let words = [li as u32, g0 as u32, n as u32];
+                let ret = invoke(self.fd, self.handle, scalars(4, 3, 0), &mut [Arg::input(&words), Arg::shared(&self.inb, n * nk * TILE_BYTES), Arg::input(&bias)]).map_err(|e| format!("load: {e}"))?;
                 if ret != 0 {
-                    return Err(format!("load layer {li} group {g}: DSP returned 0x{ret:x}"));
+                    return Err(format!("load layer {li} groups {g0}..{}: DSP returned 0x{ret:x} (rebuild npu/ if the DSP library predates method 4)", g0 + n));
                 }
+                load_us += t.elapsed().as_micros();
+                g0 += n;
             }
         }
         let last = layers.last().unwrap();
@@ -140,6 +159,9 @@ impl Session {
         let batches_per_call = 32.min(IN_BYTES / (nk0 * TILE_BYTES)).min((OUT_BYTES - HEADER) / (per * TILE_BYTES));
         if batches_per_call == 0 {
             return Err("layer too wide for the shared buffers".into());
+        }
+        if std::env::var("NPU_SERVER_TIMING").is_ok() {
+            eprintln!("npu-server: define {} us total: close+open {open_us} us, pack {pack_us} us, {groups} load calls {load_us} us", t_all.elapsed().as_micros());
         }
         self.model = Some(Model { n_in: layers[0].n_in, n_out: last.n_out, nk0, og, last_signed, batches_per_call });
         Ok(())

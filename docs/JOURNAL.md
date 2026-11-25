@@ -163,6 +163,8 @@ form: TECHNICAL.md section 21.
 | 14 min | First-packet signatures on own traffic | Not evaluable: at most 5 new connections per server |
 | 16 min | Wider MNIST model; larger VTCM request | 2,048 features 95.56%; 4,096 do not fit; 16 MB of VTCM refused |
 | 25 min | Capture finished; full real suite rerun | 23 results in TECHNICAL.md section 21 |
+| 27 min | Vectorised weight packing to speed up paged searches | No change: timing showed 63 load calls at 0.35 ms each were the cost, not packing |
+| 28 min | DSP method 4: load a whole layer in one call through the shared buffer | Model load 25-35 ms to 5.6 ms; image search 1.3 s to 0.65 s; everything still verifies |
 
 Things that did not work, kept on record:
 

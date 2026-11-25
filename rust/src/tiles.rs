@@ -90,14 +90,30 @@ pub unsafe fn pack_batch(tiles: *mut u16, x: &[f32], n_rows: usize, n_feat: usiz
 /// Weight tiles for output group `g` of a layer: `w` is row-major [n_out][n_in] float32.
 /// Cell q of tile k holds input channel 32k + 2*(q/64) + q%2 and output channel 32g + (q%64)/2.
 pub fn pack_weights(w: &[f32], n_out: usize, n_in: usize, g: usize) -> Vec<u16> {
+    // Row r of tile k holds input channels i0 = 32k + 2r and i0 + 1, interleaved over the 32 outputs of the
+    // group: { w[o0][i0], w[o0][i0+1], w[o1][i0], w[o1][i0+1], ... }. In row-major [n_out][n_in] storage the two
+    // values of each pair are neighbours, so gather the 64 floats of a row and convert them eight at a time.
     let nk = tiles_for(n_in);
     let mut t = vec![0u16; nk * TILE_CELLS];
+    let outs = (n_out - 32 * g).min(32);
     for k in 0..nk {
-        for q in 0..TILE_CELLS {
-            let i = 32 * k + 2 * (q / 64) + q % 2;
-            let o = 32 * g + (q % 64) / 2;
-            if o < n_out && i < n_in {
-                t[k * TILE_CELLS + q] = f16_bits(w[o * n_in + i]);
+        for r in 0..32 {
+            let i0 = 32 * k + 2 * r;
+            if i0 >= n_in {
+                break;
+            }
+            let pair = i0 + 1 < n_in;
+            let (mut a, mut b) = ([0f32; 32], [0f32; 32]);
+            for o in 0..outs {
+                let row = (32 * g + o) * n_in + i0;
+                a[o] = w[row];
+                if pair {
+                    b[o] = w[row + 1];
+                }
+            }
+            let out = unsafe { t.as_mut_ptr().add(k * TILE_CELLS + 64 * r) };
+            for c in (0..32).step_by(4) {
+                unsafe { cvt_zip4(a.as_ptr().add(c), b.as_ptr().add(c), out.add(2 * c)) };
             }
         }
     }

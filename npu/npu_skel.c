@@ -147,6 +147,43 @@ static int do_load(remote_arg *pra, u32 n_in)
 	return 0;
 }
 
+/* method 4: load several consecutive output groups of one layer in a single call.
+ * in { layer, first_group, n_groups } + n_groups * nk weight tiles + n_groups * 32 FP16 biases.
+ * One FastRPC call costs about 0.35 ms whatever it carries, so a layer with 63 groups took 20-29 ms to load
+ * group by group. The weights normally arrive in a shared buffer and are copied to VTCM with HVX. */
+static int do_load_many(remote_arg *pra, u32 n_in)
+{
+	const u32 *in = pra[0].buf.pv;
+	struct layer *l;
+	u32 sizes[2], g, i, first, ng;
+	const char *w; const u16 *sb;
+	char *dst;
+
+	if (!S.ctx || in[0] >= S.n_layers) return E_STATE;
+	l = &S.l[in[0]]; first = in[1]; ng = in[2];
+	if (!ng || first >= l->ng || ng > l->ng - first) return E_PARM;
+	sizes[0] = ng * l->nk * TILE; sizes[1] = ng * 64;
+	w = blob(pra, n_in, 3, 0, sizes); sb = blob(pra, n_in, 3, 1, sizes);
+	if (!w || !sb) return E_PARM;
+	dst = l->wt + first * l->nk * TILE;
+	if (!((u32)w & 127) && !((u32)dst & 127) && qurt_hvx_lock(1) == 0) {
+		hvx_copy(dst, w, sizes[0]);
+		qurt_hvx_unlock();
+	} else {
+		memcpy(dst, w, sizes[0]);
+	}
+	for (g = 0; g < ng; g++) {
+		u32 *b = l->bias + (first + g) * 128;
+		for (i = 0; i < 32; i++) {
+			u16 v = sb[g * 32 + i];
+			b[i] = 0x3c00 | ((u32)v << 16);
+			b[64 + i] = 0xbc00 | ((u32)(v ^ 0x8000) << 16);
+			b[32 + i] = b[96 + i] = 0;
+		}
+	}
+	return 0;
+}
+
 /* method 2: run.  in { n_batches, flags } + n_batches * nk[0] activation tiles.  flags bit 0: one "deep" multiply
  * per up-to-32 tiles instead of one multiply per tile.  flags bit 2: copy tiles with HVX vectors (falls back to
  * memcpy if the HVX lock is refused; status[2] = lock return code).  flags bit 1: for a signed last layer return both convert
@@ -249,6 +286,8 @@ int npu_skel_invoke(u32 sc, remote_arg *pra)
 		if (pra[0].buf.len < 8 || !st || pra[n_in].buf.len < 32) return E_PARM;
 		for (i = 0; i < 8; i++) st[i] = 0xdeadbeef;
 		return do_run(pra, n_in);
+	case 4:
+		return pra[0].buf.len < 12 ? E_PARM : do_load_many(pra, n_in);
 	case 3:
 		if (S.ctx) compute_resource_release(S.ctx);
 		memset(&S, 0, sizeof(S));
