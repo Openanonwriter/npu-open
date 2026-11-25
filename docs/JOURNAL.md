@@ -167,6 +167,8 @@ form: TECHNICAL.md section 21.
 | 28 min | DSP method 4: load a whole layer in one call through the shared buffer | Model load 25-35 ms to 5.6 ms; image search 1.3 s to 0.65 s; everything still verifies |
 | 29 min | Server request `A`: best match per row only | Nearest neighbour for all 10,000 MNIST digits: 96.2% in 1.97 s |
 | 30 min | NSL-KDD nearest neighbour over all 125,973 training rows, no fitted model | 78.8%; showed that narrow-input layers are limited by convert, not multiply |
+| 32 min | Generated domains by nearest neighbour | 69.1% overall but suppobox 78% (readout: 17%) |
+| 33 min | Combined readout and close neighbour | First try used a weak readout and looked bad; redone with the strong one: 89.3%, suppobox 69%, false alarms 9.7% |
 
 Things that did not work, kept on record:
 

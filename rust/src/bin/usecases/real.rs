@@ -591,42 +591,7 @@ fn nsl_fusion(c: &mut Client) -> Result<(), String> {
 /// (length, digits, vowels, longest consonant run, distinct letters). Ridge readout, sparse fit on 120,000 names.
 fn dga_rich(c: &mut Client) -> Result<(), String> {
     let text = std::fs::read_to_string(data_path("data/dga/dga_domains_full.csv")).map_err(|e| format!("data/dga: {e}"))?;
-    let d = 729 + 1024 + 6 + 5;
-    // Word-level inputs: split the name greedily into the longest dictionary words (system word list, 4+ letters).
-    let dict: std::collections::HashSet<String> = std::fs::read_to_string("/usr/share/dict/words").unwrap_or_default().lines()
-        .filter(|w| w.len() >= 4 && w.bytes().all(|b| b.is_ascii_lowercase())).map(|w| w.to_string()).collect();
-    let words = |label: &str| -> (f32, f32, f32, f32) {
-        let b = label.as_bytes();
-        let (mut i, mut n, mut covered, mut longest) = (0usize, 0f32, 0usize, 0usize);
-        while i < b.len() {
-            let hit = (4..=(b.len() - i).min(14)).rev().find(|&l| std::str::from_utf8(&b[i..i + l]).map(|w| dict.contains(w)).unwrap_or(false));
-            match hit { Some(l) => { n += 1.0; covered += l; longest = longest.max(l); i += l } None => i += 1 }
-        }
-        (n, covered as f32 / b.len().max(1) as f32, longest as f32 / 14.0, if covered == b.len() && n == 2.0 { 1.0 } else { 0.0 })
-    };
-    let feat = |name: &str| -> Vec<(usize, f32)> {
-        let label = name.split('.').next().unwrap_or(name);
-        let b = label.as_bytes();
-        let p = letter_pairs(label);
-        let mut v: Vec<(usize, f32)> = p.iter().map(|&i| (i, 1.0 / p.len() as f32)).collect();
-        let padded: Vec<u8> = [b" ", b, b" "].concat();
-        let nt = padded.len().saturating_sub(2).max(1) as f32;
-        for w in padded.windows(3) {
-            let h = (w[0] as u32).wrapping_mul(0x9E37_79B1) ^ (w[1] as u32).wrapping_mul(0x85EB_CA6B) ^ (w[2] as u32).wrapping_mul(0xC2B2_AE35);
-            v.push((729 + (h.wrapping_mul(0x27D4_EB2F) >> 16) as usize % 1024, 1.0 / nt));
-        }
-        let len = b.len().max(1) as f32;
-        let vowels = b.iter().filter(|c| b"aeiou".contains(c)).count() as f32;
-        let (mut run, mut longest) = (0, 0);
-        for ch in b {
-            if ch.is_ascii_lowercase() && !b"aeiou".contains(ch) { run += 1; longest = longest.max(run) } else { run = 0 }
-        }
-        let distinct = (0..=255u8).filter(|c| b.contains(c)).count() as f32;
-        v.extend([(1753, len / 32.0), (1754, b.iter().filter(|c| c.is_ascii_digit()).count() as f32 / len), (1755, vowels / len), (1756, longest as f32 / 8.0), (1757, distinct / len), (1758, 1.0)]);
-        let (nw, cov, lw, two) = words(label);
-        v.extend([(1759, nw / 4.0), (1760, cov), (1761, lw), (1762, two), (1763, cov * len / 32.0)]);
-        v
-    };
+    let (d, feat) = rich_dga_inputs();
     let rows: Vec<(bool, &str, &str)> = text.lines().filter_map(|l| { let mut p = l.split(','); Some((p.next()? == "dga", p.next()?, p.next()?)) }).collect();
     let (n_fit, n_test) = (120000usize, 60000usize);
     let step = rows.len() / (n_fit + n_test);
@@ -972,4 +937,124 @@ fn nsl_neighbours(c: &mut Client) -> Result<(), String> {
     report(229, "NSL-KDD nearest neighbour", &format!("{n} test against {nt} training connections"),
         &format!("{:.1}% correct; attacks {:.1}% (DoS {:.0}, probe {:.0}, R2L {:.0}, U2R {:.0}), false alarms {:.1}%", 100.0 * right as f32 / n as f32, rate(&|l| l != 0), rate(&|l| l == 1), rate(&|l| l == 2), rate(&|l| l == 3), rate(&|l| l == 4), rate(&|l| l == 0)), n, st, None);
     Ok(())
+}
+
+pub const CASES12: [Case; 1] = [(412, "real", dga_neighbours)];
+
+/// 412. Generated domains by nearest neighbour: each test name takes the label of the most similar of
+/// 60,000 labelled names (cosine similarity of hashed letter triples). Word-built families reuse a small
+/// vocabulary, so their names resemble each other even though each looks like ordinary words.
+fn dga_neighbours(c: &mut Client) -> Result<(), String> {
+    let text = std::fs::read_to_string(data_path("data/dga/dga_domains_full.csv")).map_err(|e| format!("data/dga: {e}"))?;
+    let rows: Vec<(bool, &str, &str)> = text.lines().filter_map(|l| { let mut p = l.split(','); Some((p.next()? == "dga", p.next()?, p.next()?)) }).collect();
+    let (dim, n_ref, n_test, block) = (1024usize, 60000usize, 10000usize, 1000usize);
+    let step = rows.len() / (n_ref + n_test);
+    let label_of = |name: &str| name.split('.').next().unwrap_or(name).to_string();
+    // interleave so that reference and test names come from the whole file, never the same row
+    let test: Vec<(bool, &str, &str)> = (0..n_test).map(|i| rows[(i * 7 + 3) * step]).collect();
+    let refs: Vec<(bool, &str, &str)> = (0..(n_ref + n_test)).filter(|i| !(i % 7 == 3 && i / 7 < n_test)).take(n_ref).map(|i| rows[i * step]).collect();
+    let x: Vec<f32> = test.iter().flat_map(|t| trigram_vector(&label_of(t.2), dim)).collect();
+    let mut best = vec![(0usize, f32::MIN); n_test];
+    let mut st = Stats::default();
+    for b0 in (0..refs.len()).step_by(block) {
+        let m = block.min(refs.len() - b0);
+        let w: Vec<f32> = refs[b0..b0 + m].iter().flat_map(|r| trigram_vector(&label_of(r.2), dim)).collect();
+        c.linear(w, m, dim, false)?;
+        let (out, s) = c.run_argmax(&x, n_test)?;
+        add(&mut st, s);
+        for (q, (i, v)) in out.into_iter().enumerate() {
+            if v > best[q].1 {
+                best[q] = (b0 + i, v);
+            }
+        }
+    }
+    let guess: Vec<bool> = best.iter().map(|b| refs[b.0].0).collect();
+    let right = (0..n_test).filter(|&i| guess[i] == test[i].0).count();
+    let fa = (0..n_test).filter(|&i| !test[i].0 && guess[i]).count() as f32 / test.iter().filter(|t| !t.0).count() as f32;
+    let mut fam: std::collections::BTreeMap<&str, (usize, usize)> = Default::default();
+    for i in (0..n_test).filter(|&i| test[i].0) {
+        let e = fam.entry(test[i].1).or_default();
+        e.0 += 1;
+        e.1 += guess[i] as usize;
+    }
+    let pick = |name: &str| fam.get(name).map(|v| format!("{name} {:.0}%", 100.0 * v.1 as f32 / v.0.max(1) as f32)).unwrap_or_default();
+    report(412, "Generated domains, neighbours", &format!("{n_test} real names against {} labelled names", refs.len()),
+        &format!("{:.1}% correct, {:.1}% false alarms; {}, {}, {}", 100.0 * right as f32 / n_test as f32, 100.0 * fa, pick("nymaim"), pick("suppobox"), pick("gozi")), n_test, st, None);
+
+    // 512. Combination: the strong readout of case 312 (good on random-looking names) OR a nearest neighbour
+    // that is a generated name and close enough (good on word-built names). Three closeness thresholds are
+    // reported side by side; none is tuned on these test names.
+    let (d, feat) = rich_dga_inputs();
+    let (mut xtx, mut xty) = (vec![0f64; d * d], vec![0f64; d]);
+    for r in &refs {
+        let f = feat(r.2);
+        for &(a, va) in &f {
+            xty[a] += va as f64 * if r.0 { 1.0 } else { -1.0 };
+            for &(b, vb) in &f {
+                xtx[a * d + b] += va as f64 * vb as f64;
+            }
+        }
+    }
+    let w: Vec<f32> = solve_spd(&xtx, d, &xty, 1, 0.3).iter().map(|&v| v as f32).collect();
+    let mut xr = vec![0f32; n_test * d];
+    for (i, t) in test.iter().enumerate() {
+        feat(t.2).iter().for_each(|&(a, v)| xr[i * d + a] += v);
+    }
+    c.linear(w, 1, d, false)?;
+    let (ys, st2) = c.run(&xr, n_test)?;
+    let readout = (0..n_test).filter(|&i| (ys[i] > 0.0) == test[i].0).count();
+    let n_legit = test.iter().filter(|t| !t.0).count() as f32;
+    let mut parts = Vec::new();
+    for tau in [0.5f32, 0.6, 0.7] {
+        let both: Vec<bool> = (0..n_test).map(|i| ys[i] > 0.0 || (guess[i] && best[i].1 > tau)).collect();
+        let right2 = (0..n_test).filter(|&i| both[i] == test[i].0).count();
+        let fa2 = (0..n_test).filter(|&i| !test[i].0 && both[i]).count() as f32 / n_legit;
+        let sup = (0..n_test).filter(|&i| test[i].0 && test[i].1 == "suppobox").fold((0, 0), |a, i| (a.0 + both[i] as usize, a.1 + 1));
+        parts.push(format!("closeness {tau}: {:.1}% correct, {:.1}% false alarms, suppobox {:.0}%", 100.0 * right2 as f32 / n_test as f32, 100.0 * fa2, 100.0 * sup.0 as f32 / sup.1.max(1) as f32));
+    }
+    report(512, "Generated domains, combined", &format!("{n_test} real names, readout OR close neighbour"),
+        &format!("readout alone {:.1}%; {}", 100.0 * readout as f32 / n_test as f32, parts.join("; ")), n_test, st2, None);
+    Ok(())
+}
+
+/// The 1,764 inputs of case 312 for one domain name, as (index, value) pairs: letter pairs, hashed letter
+/// triples, shape numbers and dictionary-word counts. Returns the input width and the builder.
+fn rich_dga_inputs() -> (usize, Box<dyn Fn(&str) -> Vec<(usize, f32)>>) {
+    let d = 729 + 1024 + 6 + 5;
+    // Word-level inputs: split the name greedily into the longest dictionary words (system word list, 4+ letters).
+    let dict: std::collections::HashSet<String> = std::fs::read_to_string("/usr/share/dict/words").unwrap_or_default().lines()
+        .filter(|w| w.len() >= 4 && w.bytes().all(|b| b.is_ascii_lowercase())).map(|w| w.to_string()).collect();
+    let words = move |label: &str| -> (f32, f32, f32, f32) {
+        let b = label.as_bytes();
+        let (mut i, mut n, mut covered, mut longest) = (0usize, 0f32, 0usize, 0usize);
+        while i < b.len() {
+            let hit = (4..=(b.len() - i).min(14)).rev().find(|&l| std::str::from_utf8(&b[i..i + l]).map(|w| dict.contains(w)).unwrap_or(false));
+            match hit { Some(l) => { n += 1.0; covered += l; longest = longest.max(l); i += l } None => i += 1 }
+        }
+        (n, covered as f32 / b.len().max(1) as f32, longest as f32 / 14.0, if covered == b.len() && n == 2.0 { 1.0 } else { 0.0 })
+    };
+    let feat = move |name: &str| -> Vec<(usize, f32)> {
+        let label = name.split('.').next().unwrap_or(name);
+        let b = label.as_bytes();
+        let p = letter_pairs(label);
+        let mut v: Vec<(usize, f32)> = p.iter().map(|&i| (i, 1.0 / p.len() as f32)).collect();
+        let padded: Vec<u8> = [b" ", b, b" "].concat();
+        let nt = padded.len().saturating_sub(2).max(1) as f32;
+        for w in padded.windows(3) {
+            let h = (w[0] as u32).wrapping_mul(0x9E37_79B1) ^ (w[1] as u32).wrapping_mul(0x85EB_CA6B) ^ (w[2] as u32).wrapping_mul(0xC2B2_AE35);
+            v.push((729 + (h.wrapping_mul(0x27D4_EB2F) >> 16) as usize % 1024, 1.0 / nt));
+        }
+        let len = b.len().max(1) as f32;
+        let vowels = b.iter().filter(|c| b"aeiou".contains(c)).count() as f32;
+        let (mut run, mut longest) = (0, 0);
+        for ch in b {
+            if ch.is_ascii_lowercase() && !b"aeiou".contains(ch) { run += 1; longest = longest.max(run) } else { run = 0 }
+        }
+        let distinct = (0..=255u8).filter(|c| b.contains(c)).count() as f32;
+        v.extend([(1753, len / 32.0), (1754, b.iter().filter(|c| c.is_ascii_digit()).count() as f32 / len), (1755, vowels / len), (1756, longest as f32 / 8.0), (1757, distinct / len), (1758, 1.0)]);
+        let (nw, cov, lw, two) = words(label);
+        v.extend([(1759, nw / 4.0), (1760, cov), (1761, lw), (1762, two), (1763, cov * len / 32.0)]);
+        v
+    };
+    (d, Box::new(feat))
 }

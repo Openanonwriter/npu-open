@@ -758,6 +758,7 @@ Case 203 with 2,048 random features (`NPU_FEATS=2048`) gives 95.56%; 4,096 do no
 | Fusion helps on NSL-KDD | Classifier OR whitened distance: 84.4% correct, up from 78.8%. More random features alone do not help (77.4% with 1,024 on 60,000 rows): KDDTest+ has attack types missing from training. R2L stays at 28-40% |
 | A real baseline fixes the false alarms | With this machine's own traffic as baseline (1,805 flow records), 1.1% false alarms on unseen real traffic and every scan flagged; a quiet 20 s live capture gave 0 alarms in 19 records, where the section 18 tool gave 6 in 25 |
 | Lookalike matching is the wrong tool for today's phishing | 187 of 300 feed hosts are `*.pages.dev`; only 7.3% resemble a brand, and 3.44% of popular sites do too (brand-owned names such as amazonaws). Scoring the whole hostname catches 69.9% of unseen hosts at 1% false alarms, mostly by learning hosting platforms |
+| Neighbours catch what statistics miss | Generated domains: nearest neighbour over 60,000 labelled names is poor overall (69.1%) but finds suppobox 78% of the time against 17% for the readout. Readout OR close neighbour (cosine above 0.5): 89.3% correct, suppobox 69%, false alarms 9.7% (readout alone 88.2% and about 7.4%). At 0.6: 88.7%, 35%, 7.9%. At 0.7: 88.3%, 17%, 7.5% |
 | Word-built generated names pass | 87-89% overall, but nymaim 6%, suppobox 17%, gozi 65%: names made of dictionary words look like legitimate ones to letter statistics, and adding dictionary-word counts moved the total only from 87.8% to 88.7% |
 | Closed-form MNIST | 94.14% with 1,024 random features fitted on 30,000 images in 6.3 s, 95.56% with 2,048 in 40 s; nearest centroid 80.4%; exact nearest neighbour over 30,000 images 94.2% |
 | Real radio | OOK or FSK by a no-fit rule: 143 of 164 (87.2%; majority class 74%). The strongest bin moving between frames marks FSK. Bin 0 must be ignored (receiver DC offset) |
@@ -787,3 +788,4 @@ Replaces the autoencoder of section 18 for live use. Needs the server running an
 
 It fits the whitened distance on the baseline, scores the capture on the accelerator, and for the ten oddest
 flows prints the score and the single feature furthest from the baseline in standard deviations.
+`ids/watch.sh 30` repeats it until interrupted, printing the summary line and any alarms.
